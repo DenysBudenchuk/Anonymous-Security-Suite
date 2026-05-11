@@ -8,8 +8,6 @@ Wymagania:
 
 import os
 import sys
-import types
-from typing import Optional
 import tkinter as tk
 from tkinter import filedialog, messagebox, scrolledtext
 import threading
@@ -28,16 +26,19 @@ import pystray
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
 
+from locales import TRANSLATIONS
+from stopwords import STOP_WORDS 
+
 # ─────────────────────────────────────────────
-# Змінні глобальні
+# Zmienne globalne
 # ─────────────────────────────────────────────
 spacy = None
 nlp_spacy = None
 pipeline_pii = None
-fitz: types.ModuleType | None = None   # FIX: анотація типу замість голого None
+fitz = None
 
 MODELS_LOADED = False
-# ВИДАЛЕНО: MODELS_LOADING — ніде не читалась
+MODELS_LOADING = False
 
 if getattr(sys, 'frozen', False):
     application_path = Path(sys.executable).parent
@@ -51,125 +52,64 @@ BASE_MODEL_PATH = application_path / "offline_models"
 # ==========================================
 # СТАТИЧНА БАЗА ДАНИХ (GAZETTEER)
 # ==========================================
-KNOWN_NAMES_SET: set[str] = set()
+KNOWN_NAMES_SET = set()
 
-STOP_WORDS = {
-    # 1. Займенники, сполучники, прийменники
-    "ja", "ty", "on", "ona", "ono", "my", "wy", "oni", "one", "mnie", "mi", "mną", "ciebie", "cię", "ci",
-    "tobą", "jego", "niego", "go", "jemu", "niemu", "mu", "nim", "jej", "niej", "nią", "nas", "nam", "nami",
-    "was", "wam", "wami", "ich", "nich", "im", "nimi", "siebie", "się", "sobie", "sobą", "mój", "moja", "moje",
-    "twój", "twoja", "twoje", "nasz", "nasza", "nasze", "wasz", "wasza", "wasze", "swój", "swoja", "swoje",
-    "ten", "ta", "to", "tamten", "tamta", "tamto", "taki", "taka", "takie", "tym", "obie", "oba", "oboje",
-    "kto", "co", "jaki", "który", "ktoś", "coś", "jakiś", "nikt", "nic", "żaden", "każdy", "wszyscy", "wielu",
-    "w", "we", "z", "ze", "na", "do", "dla", "o", "od", "po", "pod", "pode", "nad", "nade", "przed", "przede",
-    "za", "przy", "bez", "beze", "u", "ku", "mimo", "pomimo", "wokół", "obok", "wzdłuż", "oprócz", "zamiast",
-    "według", "wobec", "pomiędzy", "między", "wewnątrz", "zewnątrz", "poniżej", "powyżej",
-    "i", "a", "oraz", "lub", "czy", "albo", "bądź", "ani", "ni", "ale", "lecz", "jednak", "jednakże",
-    "zaś", "natomiast", "więc", "dlatego", "zatem", "toteż", "że", "iż", "ponieważ", "bo", "gdy", "gdyby",
-    "jeśli", "jeżeli", "choć", "chociaż", "chociażby", "zanim", "aż", "nie", "tak", "niech", "by", "no",
-    "oby", "tylko", "nawet", "też", "także", "ponadto", "stąd", "wreszcie", "następnie", "obecnie", "aktualnie",
 
-    # 2. Дієслова та прислівники
-    "być", "jest", "są", "był", "była", "było", "byli", "były", "będzie", "będą", "będę", "będziesz",
-    "mieć", "ma", "mają", "miał", "miała", "miało", "mieli", "miały", "mam", "masz",
-    "może", "mogą", "mógł", "mogła", "musieć", "musi", "muszą", "chcieć", "chce", "chcą",
-    "został", "została", "zostali", "zostały", "zostać", "powinien", "powinna", "powinno", "powinni",
-    "nierzetelnie", "niezwłocznie", "szybko", "wolno", "bardzo", "mało", "dużo", "wiele", "nieco", "zbyt",
-
-    # 3. Корпоративна лексика, посади, титули
-    "pan", "pana", "panu", "panem", "pani", "panią", "państwo", "państwa", "państwu", "proszę", "dziękuję",
-    "witam", "pozdrawiam", "szanowny", "szanowna", "szanowni", "poważaniem", "poważanie",
-    "dnia", "roku", "miesiąca", "ulica", "numer", "telefon", "faks", "email", "mail", "adres",
-    "miasto", "miejscowość", "kod", "pocztowy", "nip", "pesel", "regon", "iban", "krs", "cvv", "cvc", "bdo",
-    "dowód", "osobisty", "paszport", "załącznik", "dokument", "umowa", "faktura", "paragon", "rachunek",
-    "kwota", "suma", "cena", "netto", "brutto", "podatek", "vat", "pit", "cit", "data", "podpis", "pieczęć",
-    "sztuka", "uwaga", "strona", "konto", "karta", "kredytowa", "debetowa", "bank", "przelew", "gotówka",
-    "imię", "nazwisko", "dane", "osoba", "excel", "dz", "chaos", "wartość", "koszt", "przychód", "dochód",
-    "marszałek", "marszałka", "marszałkowi", "marszałkiem", "marszałkowskiego",
-    "konserwator", "konserwatora", "konserwatorem",
-    "inżynier", "inżyniera", "inżynierem", "dyrektor", "dyrektora", "dyrektorze", "dyrekcja", "główny", "głównego",
-    "kierownik", "kierownika", "prezes", "prezesa", "wiceprezes", "członek", "zastępca", "pełnomocnik",
-    "wójt", "burmistrz", "starosta", "wojewoda", "poseł", "senator", "sędzia", "prokurator", "adwokat", "radca",
-    "delegatura", "delegatury", "zarządzenie", "zarządzenia", "uchwała", "uchwały", "ustawa", "ustawy",
-    "wieloletniej", "prognozie", "finansowej", "rozporządzenie", "decyzja", "postanowienie", "zaświadczenie",
-
-    # 4. Установи, організації та юридичні терміни
-    "firma", "spółka", "spółki", "spółką", "przedsiębiorstwo", "działalność", "gospodarcza",
-    "urząd", "urzędu", "urzędzie", "urzędem", "gmina", "powiat", "powiatowy",
-    "wydział", "wydziału", "departament", "departamentu", "departamencie", "referat", "sekcja",
-    "ministerstwo", "ministerstwa", "minister", "ministra", "ministrem", "ministrowi",
-    "komisja", "komisji", "komisję", "związek", "związku", "związkiem", "rada", "zarząd",
-    "teatr", "teatru", "teatrowi", "teatrem", "teatrze", "muzeum", "szkoła", "uczelnia", "szpital", "przychodnia",
-    "województwo", "województwa", "województw", "wojewódzkiego", "wojewódzkiej", "sejmik", "sejmiku",
-    "sąd", "sądu", "sądzie", "trybunał", "prokuratura", "policja", "straż",
-
-    # 5. Міста, країни, географія
-    "kielce", "kielcach", "kielcami", "kielc", "kieleckich", "kieleckiej", "kiele", "kie",
-    "warszawa", "warszawie", "łódź", "łodzi", "częstochowa", "częstochowy", "kraków", "krakowie",
-    "poznań", "poznaniu", "wrocław", "wrocławiu", "gdańsk", "gdańsku", "szczecin", "szczecinie",
-    "bydgoszcz", "bydgoszczy", "lublin", "lublinie", "katowice", "katowicach", "białystok", "białymstoku",
-    "gdynia", "sopot", "rzeszów", "rzeszowie", "toruń", "toruniu", "opole", "opolu",
-    "europa", "europie", "islandia", "islandii", "islandzką", "norwegia", "norwegii", "ukraina", "ukrainę", "ue",
-
-    # 6. Абревіатури, одиниці виміру та OCR-сміття
-    # ВИДАЛЕНО: однобуквені "a".."z" — ніколи не спрацьовували (regex вимагає Uppercase першої букви)
-    "ul", "al", "pl", "nr", "tel", "fax", "kom", "km", "cm", "mm", "kg", "szt", "egz", "kpl",
-    "godz", "min", "sek", "sp", "zoo", "sa", "prof", "dr", "mgr", "inż", "lek", "med", "hab",
-    "np", "tj", "tzw", "ww", "itd", "itp", "cdn", "str", "poz", "ust", "art", "par", "pkt",
-    "im", "ce", "cach", "ręb", "krzy", "święt", "ill", "nro", "uzp", "inw", "ke",
-
-    # 7. Римські цифри (часто сприймаються як імена)
-    "ii", "iii", "iv", "vi", "vii", "viii", "ix", "xi", "xii", "xiii", "xiv", "xv",
-
-    # 8. Державні прикметники
-    "polska", "polskiej", "polskich", "polską", "polski", "polskie",
-    "rzeczypospolita", "rzeczypospolitej", "unijny", "unijna", "unijne", "unijnych",
-    "europejski", "europejska", "europejskie", "europejskiego", "krajowy", "krajowa", "krajowe",
-
-    # 9. Звичайні слова, що спричинили False Positives
-    "poprawa", "stan", "zasady", "prawna", "łącza", "łączna", "konieczne", "ośmiomiesięcznego",
-
-    # 10. Інші загальні іменники / прикметники
-    "mucha", "zima", "lato", "wiosna", "jesień", "kowal", "kruk", "lis", "wilk", "niedziela", "sobota",
-    "zając", "niedźwiedź", "sowa", "dudek", "kaczka", "gęś", "ptak", "ryba", "kot", "pies",
-    "cebula", "burak", "kapusta", "marchew", "woda", "piwo", "wino", "chleb", "masło", "ser",
-    "wiatr", "mróz", "burza", "chmura", "słońce", "księżyc", "gwiazda", "niebo", "ziemia",
-    "biały", "czarny", "czerwony", "zielony", "niebieski", "żółty", "szary", "brązowy", "złoty", "srebrny",
-    "mały", "duży", "gruby", "chudy", "wysoki", "niski", "stary", "nowy", "młody",
-    "dobry", "zły", "prawy", "lewy", "góra", "dół", "przód", "tył", "bok", "środek",
-    "koniec", "początek", "wielki", "krótki", "długi", "las", "pole", "morze", "rzeka", "góry",
-    "dzisiaj", "jutro", "wczoraj", "rano", "wieczór", "południe", "kwartał", "półrocze", "termin", "okres",
+THEMES = {
+    "light": {
+        "bg": "#f3f4f6",
+        "panel": "#e5e7eb",
+        "card": "#ffffff",
+        "text_primary": "#374151",
+        "text_secondary": "#6b7280",
+        "accent": "#4b5563",
+        "accent2": "#0369a1",
+        "accent_hover": "#374151",
+        "border": "#d1d5db",
+        "success": "#10b981",
+        "danger": "#ef4444",
+        "warning": "#f59e0b"
+    },
+    "dark": {
+        "bg": "#1f2937",
+        "panel": "#111827",
+        "card": "#374151",
+        "text_primary": "#f9fafb",
+        "text_secondary": "#9ca3af",
+        "accent": "#6b7280",
+        "accent2": "#4b5563",
+        "accent_hover": "#9ca3af",
+        "border": "#4b5563",
+        "success": "#059669",
+        "danger": "#dc2626",
+        "warning": "#d97706"
+    }
 }
 
-
 def load_names_db(log_callback=None):
-    """Завантажує базу імен у геш-множину для швидкого пошуку O(1)."""
     global KNOWN_NAMES_SET
     db_path = BASE_MODEL_PATH / "names_db.txt"
-
     if db_path.exists():
         try:
             with open(db_path, "r", encoding="utf-8") as f:
                 KNOWN_NAMES_SET.update(line.strip().lower() for line in f if line.strip())
-            if log_callback:
-                log_callback(f"✅ Baza słownikowa załadowana: {len(KNOWN_NAMES_SET)} słów.")
         except Exception as e:
-            if log_callback:
-                log_callback(f"⚠️ Błąd ładowania bazy imion: {e}")
-    else:
-        if log_callback:
-            log_callback("⚠️ Brak pliku names_db.txt w folderze offline_models.")
-
+            if log_callback: log_callback("log_error", str(e))
 
 # ─────────────────────────────────────────────
-# Ініціалізація моделей і OCR
+# Inicjalizacja modeli i OCR
 # ─────────────────────────────────────────────
 def ensure_models_exist(log_callback=None):
-    # ВИДАЛЕНО: перенаправлення sys.stderr/sys.stdout — log_callback вже перехоплює все
+    if sys.stderr is None:
+        class DummyOutput:
+            def write(self, *args, **kwargs): pass
+            def flush(self, *args, **kwargs): pass
+        sys.stderr = DummyOutput()
+        sys.stdout = DummyOutput()
 
     os.environ['CURL_CA_BUNDLE'] = ''
     os.environ['PYTHONHTTPSVERIFY'] = '0'
-    os.environ["HF_HUB_DISABLE_PROGRESS_BARS"] = "1"
+    os.environ["HF_HUB_DISABLE_PROGRESS_BARS"] = "1" 
 
     path_pii = BASE_MODEL_PATH / "eu-pii-anonimization"
     path_spacy = BASE_MODEL_PATH / "pl_core_news_lg"
@@ -180,135 +120,90 @@ def ensure_models_exist(log_callback=None):
     spacy_missing = not path_spacy.exists() or not list(path_spacy.glob('*'))
 
     if pii_missing or spacy_missing:
-        if log_callback:
-            log_callback("⚠️ Brak modeli AI. Rozpoczynam pobieranie...")
         BASE_MODEL_PATH.mkdir(parents=True, exist_ok=True)
-
         from huggingface_hub import snapshot_download
-        from huggingface_hub.utils.tqdm import disable_progress_bars  # FIX: правильний імпорт
+        from huggingface_hub.utils import disable_progress_bars
         disable_progress_bars()
-
-        HF_TOKEN = "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"
-
+        
+        HF_TOKEN = "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" 
         try:
             if pii_missing:
-                if log_callback:
-                    log_callback("⏳ Pobieranie PII (Transformers)...")
-                snapshot_download(  # type: ignore[call-overload]
-                    repo_id="bardsai/eu-pii-anonimization-multilang",
-                    local_dir=str(path_pii),
-                    token=HF_TOKEN,
-                    local_dir_use_symlinks=False,
-                    ignore_patterns=["*.msgpack", "*.h5", "*.ot", "*.onnx", "*.flax"],
-                )
-
+                snapshot_download(repo_id="bardsai/eu-pii-anonimization-multilang", local_dir=str(path_pii), token=HF_TOKEN, local_dir_use_symlinks=False, ignore_patterns=["*.msgpack", "*.h5", "*.ot", "*.onnx", "*.flax"])
             if spacy_missing:
-                if log_callback:
-                    log_callback("⏳ Pobieranie spaCy...")
-                snapshot_download(  # type: ignore[call-overload]
-                    repo_id="spacy/pl_core_news_lg",
-                    local_dir=str(path_spacy),
-                    token=HF_TOKEN,
-                    local_dir_use_symlinks=False,
-                    ignore_patterns=["*.h5", "*.ot", "*.onnx", "*.flax"],
-                )
-            if log_callback:
-                log_callback("✅ Modele AI pobrane.")
+                snapshot_download(repo_id="spacy/pl_core_news_lg", local_dir=str(path_spacy), token=HF_TOKEN, local_dir_use_symlinks=False, ignore_patterns=["*.h5", "*.ot", "*.onnx", "*.flax"])
         except Exception as e:
-            if log_callback:
-                log_callback(f"❌ Błąd pobierania modeli AI: {e}")
-            raise
+            if log_callback: log_callback("log_error", str(e))
+            raise e
 
     if tesseract_exe.exists():
         abs_tess_path = str(path_tesseract.absolute())
         abs_tessdata_path = str((path_tesseract / "tessdata").absolute())
         os.environ["PATH"] = abs_tess_path + os.pathsep + os.environ.get("PATH", "")
         os.environ["TESSDATA_PREFIX"] = abs_tessdata_path
-        if log_callback:
-            log_callback("✅ Silnik OCR aktywny (Ścieżki bezwzględne).")
-    else:
-        if log_callback:
-            log_callback("⚠️ Brak silnika OCR - skany nie będą obsługiwane.")
-
 
 def lazy_load_models(log_callback=None):
-    global spacy, nlp_spacy, pipeline_pii, fitz
-    global MODELS_LOADED
+    global spacy, nlp_spacy, pipeline_pii, fitz, MODELS_LOADED, MODELS_LOADING
+    MODELS_LOADING = True
 
-    def log(msg):
-        if log_callback:
-            log_callback(msg)
-        print(msg)
-
+    def log(msg, *args):
+        if log_callback: log_callback(msg, *args)
+        
     try:
         ensure_models_exist(log)
     except Exception:
-        log("❌ Krytyczny błąd: Nie można pobrać modeli.")
         return
 
     os.environ['TRANSFORMERS_OFFLINE'] = '1'
     os.environ['HF_DATASETS_OFFLINE'] = '1'
 
     try:
-        log("⏳ Ładowanie pymupdf...")
         import fitz as _fitz
         fitz = _fitz
-        log("✅ pymupdf OK")
     except ImportError:
-        log("❌ Błąd: pymupdf nie jest zainstalowany")
+        pass
 
     try:
-        log("⏳ Ładowanie spaCy (Offline)...")
         import spacy as _spacy
         spacy = _spacy
         path_spacy = str(BASE_MODEL_PATH / "pl_core_news_lg")
         nlp_spacy = spacy.load(path_spacy)
-        log("✅ spaCy OK")
-    except Exception as e:
-        log(f"⚠️ spaCy niedostępny: {e}")
+    except Exception:
+        pass
 
     try:
         from transformers import pipeline as hf_pipeline
-        log("⏳ Ładowanie BardsAI PII (Offline)...")
         path_pii = str(BASE_MODEL_PATH / "eu-pii-anonimization")
-        pipeline_pii = hf_pipeline(  # type: ignore[arg-type, call-overload]
-            task="ner",
-            model=path_pii,
-            tokenizer=path_pii,
-            aggregation_strategy="simple",
-        )
-        log("✅ BardsAI PII OK")
-    except Exception as e:
-        log(f"⚠️ Błąd ładowania Transformers: {e}")
+        pipeline_pii = hf_pipeline("ner", model=path_pii, tokenizer=path_pii, aggregation_strategy="simple")
+    except Exception:
+        pass
 
     try:
-        log("⏳ Ładowanie bazy imion (Gazetteer)...")
         load_names_db(log)
-    except Exception as e:
-        log(f"⚠️ Błąd bazy imion: {e}")
+    except Exception:
+        pass
 
     MODELS_LOADED = True
-    log("🚀 Gotowe! Wszystkie dostępne modele zostały załadowane.")
-
+    MODELS_LOADING = False
+    log("models_ready")
 
 # ─────────────────────────────────────────────
-# Мапування RegEx і NER
+# Mapowanie RegEx i NER
 # ─────────────────────────────────────────────
 REGEX_PATTERNS = {
-    "pesel":       (r"\b\d{11}\b", "PESEL"),
-    "nip":         (r"\b(\d{3}[-–]?\d{3}[-–]?\d{2}[-–]?\d{2}|\d{10})\b", "NIP"),
-    "regon":       (r"\b(\d{9}|\d{14})\b", "REGON"),
-    "iban":        (r"\b(PL\d{2}[\s]?\d{4}[\s]?\d{4}[\s]?\d{4}[\s]?\d{4}[\s]?\d{4}[\s]?\d{4})\b", "IBAN"),
-    "card":        (r"\b(?:\d[ -]*?){13,16}\b", "KARTA"),
-    "cvv":         (r"\b\d{3}\b(?=\s|$)", "CVV"),
-    "phone":       (r"(?<!\d)(\+48[\s\-]?)?(\d{3}[\s\-]?\d{3}[\s\-]?\d{3})(?!\d)", "TELEFON"),
-    "email":       (r"\b([a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,})\b", "EMAIL"),
-    "ip":          (r"\b(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})\b", "IP"),
+    "pesel": (r"\b\d{11}\b", "PESEL"),
+    "nip": (r"\b(\d{3}[-–]?\d{3}[-–]?\d{2}[-–]?\d{2}|\d{10})\b", "NIP"),
+    "regon": (r"\b(\d{9}|\d{14})\b", "REGON"),
+    "iban": (r"\b(PL\d{2}[\s]?\d{4}[\s]?\d{4}[\s]?\d{4}[\s]?\d{4}[\s]?\d{4}[\s]?\d{4})\b", "IBAN"),
+    "card": (r"\b(?:\d[ -]*?){13,16}\b", "KARTA"),
+    "cvv": (r"\b\d{3}\b(?=\s|$)", "CVV"),
+    "phone": (r"(?<!\d)(\+48[\s\-]?)?(\d{3}[\s\-]?\d{3}[\s\-]?\d{3})(?!\d)", "TELEFON"),
+    "email": (r"\b([a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,})\b", "EMAIL"),
+    "ip": (r"\b(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})\b", "IP"),
     "postal_code": (r"\b(\d{2}-\d{3})\b", "KOD_POCZTOWY"),
-    "passport":    (r"\b([A-Z]{2}\d{7})\b", "PASZPORT"),
-    "pwz":         (r"\b(PWZ[\s:]?\d{7})\b", "PWZ"),
-    "street":      (r"\b(ul\.|ulica)\s+[A-ZĄĆĘŁŃÓŚŹŻ][a-ząćęłńóśźż]+\b", "ADRES"),
-    "chat_log":    (r"\b[A-ZĄĆĘŁŃÓŚŹŻ][a-ząćęłńóśźż]+(?:[- ][A-ZĄĆĘŁŃÓŚŹŻ][a-ząćęłńóśźż]+){0,2}[\s\xa0]+(?:\d{1,2}:)?\d{1,3}:\d{2}\b", "LOG_CZATU"),
+    "passport": (r"\b([A-Z]{2}\d{7})\b", "PASZPORT"),
+    "pwz": (r"\b(PWZ[\s:]?\d{7})\b", "PWZ"),
+    "street": (r"\b(ul\.|ulica)\s+[A-ZĄĆĘŁŃÓŚŹŻ][a-ząćęłńóśźż]+\b", "ADRES"),
+    "chat_log": (r"\b[A-ZĄĆĘŁŃÓŚŹŻ][a-ząćęłńóśźż]+(?:[- ][A-ZĄĆĘŁŃÓŚŹŻ][a-ząćęłńóśźż]+){0,2}[\s\xa0]+(?:\d{1,2}:)?\d{1,3}:\d{2}\b", "LOG_CZATU"),
 }
 
 NER_LABEL_MAP = {
@@ -318,53 +213,44 @@ NER_LABEL_MAP = {
 }
 
 CATEGORY_TO_NER = {
-    "names":     ["OSOBA"],
+    "names": ["OSOBA"],
     "addresses": ["ADRES"],
     "companies": ["ORGANIZACJA"],
-}
-
-# FIX: зворотній словник — O(1) замість O(n) next() у кожному виклику NER
-MAPPED_TO_CAT: dict[str, str] = {
-    label: cat
-    for cat, labels in CATEGORY_TO_NER.items()
-    for label in labels
 }
 
 CATEGORY_TO_REGEX = {
     "pesel": "pesel", "nip": "nip", "regon": "regon", "iban": "iban",
     "phone": "phone", "email": "email", "ip": "ip", "postal_code": "postal_code",
     "passport": "passport", "pwz": "pwz", "card": "card", "cvv": "cvv",
-    "addresses": "street", "names": "chat_log",
-    # NOTE: "logos" навмисно відсутній — обробляється окремо через OpenCV template matching
+    "addresses": "street", "names": "chat_log"
 }
 
-
 # ─────────────────────────────────────────────
-# Логіка анонімізації
+# Logika anonimizacji
 # ─────────────────────────────────────────────
 class TokenRegistry:
     def __init__(self):
-        self.registry: dict[str, dict] = {}
-        self._counter: dict[str, int] = {}
+        self.registry = {}
+        self._counter = {}
 
     def get_or_create(self, original: str, label: str) -> str:
         key = original.strip()
         if key in self.registry:
             return self.registry[key]["token"]
         prefix = label[:3].upper()
-        if label == "LOG_CZATU":
-            prefix = "LOG"
+        if label == "LOG_CZATU": prefix = "LOG"
         idx = self._counter.get(label, 0) + 1
         self._counter[label] = idx
         token = f"[{prefix}_{idx:03d}]"
         self.registry[key] = {"token": token, "label": label, "original": key, "count": 1}
         return token
-
-    # ВИДАЛЕНО: get_token() — зайва обгортка навколо get_or_create
+    
+    def get_token(self, original: str, cat: str) -> str:
+        label = "OSOBA" if cat == "names" else "ENT"
+        return self.get_or_create(original, label)
 
     def to_dict(self) -> dict:
         return self.registry
-
 
 def run_names_db(text: str, enabled_cats: set, registry: TokenRegistry) -> list:
     findings = []
@@ -373,21 +259,17 @@ def run_names_db(text: str, enabled_cats: set, registry: TokenRegistry) -> list:
     pattern = re.compile(r'\b[A-ZĄĆĘŁŃÓŚŹŻ][a-ząćęłńóśźż]+\b')
     for match in pattern.finditer(text):
         word = match.group(0)
-        if word.lower() in STOP_WORDS:
-            continue
+        if word.lower() in STOP_WORDS: continue
         if word.lower() in KNOWN_NAMES_SET:
-            # FIX: викликаємо get_or_create напряму замість видаленого get_token()
-            findings.append((match.start(), match.end(), registry.get_or_create(word, "OSOBA"), "OSOBA", "regex"))
+            findings.append((match.start(), match.end(), registry.get_token(word, "names"), "OSOBA", "regex"))
     return findings
-
 
 def run_regex(text: str, enabled_cats: set, registry: TokenRegistry) -> list:
     findings = []
     for cat, pattern_key in CATEGORY_TO_REGEX.items():
-        if cat not in enabled_cats:
-            continue
+        if cat not in enabled_cats: continue
         pattern, label = REGEX_PATTERNS[pattern_key]
-
+        
         for m in re.finditer(pattern, text, re.IGNORECASE):
             if label == "CVV":
                 line_start = text.rfind('\n', 0, m.start())
@@ -395,37 +277,31 @@ def run_regex(text: str, enabled_cats: set, registry: TokenRegistry) -> list:
                 line_end = text.find('\n', m.end())
                 line_end = len(text) if line_end == -1 else line_end
                 line_text = text[line_start:line_end]
+                
                 if not re.search(r'\b(?:cvv|cvc)\b', line_text, re.IGNORECASE):
                     continue
 
             token = registry.get_or_create(m.group(), label)
             findings.append((m.start(), m.end(), token, label, "regex"))
-
     return findings
 
-
 def run_spacy(text: str, enabled_cats: set, registry: TokenRegistry) -> list:
-    if nlp_spacy is None:
-        return []
+    if nlp_spacy is None: return []
     findings = []
     doc = nlp_spacy(text)
     for ent in doc.ents:
         if ent.text.strip().lower() in STOP_WORDS or len(ent.text.strip()) < 2:
             continue
-        mapped = NER_LABEL_MAP.get(ent.label_)
-        if mapped is None:
-            continue
-        # FIX: використовуємо зворотній словник MAPPED_TO_CAT
-        cat = MAPPED_TO_CAT.get(mapped)
+        mapped = NER_LABEL_MAP.get(ent.label_, None)
+        if mapped is None: continue
+        cat = next((c for c, labels in CATEGORY_TO_NER.items() if mapped in labels), None)
         if cat and cat in enabled_cats:
             token = registry.get_or_create(ent.text, mapped)
             findings.append((ent.start_char, ent.end_char, token, mapped, "spacy"))
     return findings
 
-
 def run_transformer(pipe, name: str, text: str, enabled_cats: set, registry: TokenRegistry) -> list:
-    if pipe is None:
-        return []
+    if pipe is None: return []
     findings = []
     try:
         results = pipe(text)
@@ -435,25 +311,23 @@ def run_transformer(pipe, name: str, text: str, enabled_cats: set, registry: Tok
             word = text[start:end]
             if word.strip().lower() in STOP_WORDS or len(word.strip()) < 2:
                 continue
+
             raw_label = ent.get("entity_group", ent.get("entity", ""))
             mapped = NER_LABEL_MAP.get(raw_label, NER_LABEL_MAP.get(raw_label.upper()))
-            if mapped is None:
-                continue
-            # FIX: використовуємо зворотній словник MAPPED_TO_CAT
-            cat = MAPPED_TO_CAT.get(mapped)
+            if mapped is None: continue
+            cat = next((c for c, labels in CATEGORY_TO_NER.items() if mapped in labels), None)
             if cat and cat in enabled_cats:
                 token = registry.get_or_create(word, mapped)
                 findings.append((start, end, token, mapped, name))
-    except Exception as e:
-        print(f"⚠️ Błąd {name}: {e}")
+    except Exception:
+        pass
     return findings
-
 
 def vote_and_anonymize(text: str, all_findings: list) -> tuple[str, list]:
     ml_count = sum(1 for s in [nlp_spacy, pipeline_pii] if s is not None)
     threshold = max(1, ml_count * 0.5)
 
-    span_votes: dict[tuple, dict] = {}
+    span_votes = {}
     for start, end, token, label, source in all_findings:
         key = (start, end)
         if key not in span_votes:
@@ -486,36 +360,29 @@ def vote_and_anonymize(text: str, all_findings: list) -> tuple[str, list]:
 
     return "".join(result), merged
 
-
 # ─────────────────────────────────────────────
 # Logo Selector (OpenCV + Tkinter)
 # ─────────────────────────────────────────────
 class LogoSelector(tk.Toplevel):
-    def __init__(self, parent, pdf_path: str):
+    def __init__(self, parent, pdf_path):
         super().__init__(parent)
-        self.title("Wybierz logo (Zaznacz i zamknij okno)")
+        self.parent_app = parent 
+        self.title(self.parent_app._t("msg_logo_select_title"))
         self.geometry("800x900")
-
+        
         self.pdf_path = pdf_path
         self.template_image = None
-        self.zoom = 2.0
-
-        self.rect_id: int | None = None          # FIX: явна анотація типу
-        self.start_x: float = 0.0               # FIX: ініціалізація як float
-        self.start_y: float = 0.0
+        self.zoom = 2.0 
 
         self._load_first_page()
         self._build_canvas()
 
     def _load_first_page(self):
-        if fitz is None:
-            raise RuntimeError("pymupdf nie jest załadowany")  # FIX: guard для fitz
         doc = fitz.open(self.pdf_path)
         page = doc[0]
-        mat = fitz.Matrix(self.zoom, self.zoom)  # тепер fitz точно не None
+        mat = fitz.Matrix(self.zoom, self.zoom) 
         self.pix = page.get_pixmap(matrix=mat)
-        # FIX: tuple замість list для Image.frombytes
-        img = Image.frombytes("RGB", (self.pix.width, self.pix.height), self.pix.samples)
+        img = Image.frombytes("RGB", [self.pix.width, self.pix.height], self.pix.samples)
         self.tk_image = ImageTk.PhotoImage(img)
         doc.close()
 
@@ -524,6 +391,10 @@ class LogoSelector(tk.Toplevel):
         self.canvas.pack(fill="both", expand=True)
         self.canvas.create_image(0, 0, anchor="nw", image=self.tk_image)
 
+        self.rect_id = None
+        self.start_x = None
+        self.start_y = None
+
         self.canvas.bind("<ButtonPress-1>", self._on_press)
         self.canvas.bind("<B1-Motion>", self._on_drag)
         self.canvas.bind("<ButtonRelease-1>", self._on_release)
@@ -531,16 +402,11 @@ class LogoSelector(tk.Toplevel):
     def _on_press(self, event):
         self.start_x = self.canvas.canvasx(event.x)
         self.start_y = self.canvas.canvasy(event.y)
-        if self.rect_id is not None:
-            self.canvas.delete(self.rect_id)
-        self.rect_id = self.canvas.create_rectangle(
-            self.start_x, self.start_y, self.start_x, self.start_y,
-            outline="red", width=3,
-        )
+        if self.rect_id: self.canvas.delete(self.rect_id)
+        self.rect_id = self.canvas.create_rectangle(self.start_x, self.start_y, self.start_x, self.start_y, outline="red", width=3)
 
     def _on_drag(self, event):
-        if self.rect_id is None:  # FIX: guard проти None
-            return
+        if self.rect_id is None: return
         cur_x = self.canvas.canvasx(event.x)
         cur_y = self.canvas.canvasy(event.y)
         self.canvas.coords(self.rect_id, self.start_x, self.start_y, cur_x, cur_y)
@@ -548,78 +414,62 @@ class LogoSelector(tk.Toplevel):
     def _on_release(self, event):
         end_x = self.canvas.canvasx(event.x)
         end_y = self.canvas.canvasy(event.y)
-
-        # FIX: start_x/start_y тепер завжди float — min/max не падають
+        
         x1, y1 = min(self.start_x, end_x), min(self.start_y, end_y)
         x2, y2 = max(self.start_x, end_x), max(self.start_y, end_y)
-
+        
         if abs(x2 - x1) > 10 and abs(y2 - y1) > 10:
-            img_np = np.frombuffer(self.pix.samples, dtype=np.uint8).reshape(
-                self.pix.height, self.pix.width, self.pix.n
-            )
+            img_np = np.frombuffer(self.pix.samples, dtype=np.uint8).reshape(self.pix.height, self.pix.width, self.pix.n)
             if self.pix.n == 4:
                 img_cv = cv2.cvtColor(img_np, cv2.COLOR_RGBA2BGR)
             else:
                 img_cv = cv2.cvtColor(img_np, cv2.COLOR_RGB2BGR)
+            
             self.template_image = img_cv[int(y1):int(y2), int(x1):int(x2)]
-            messagebox.showinfo("Zapisano", "Logo zostało skopiowane jako wzór. Możesz zamknąć to okno.")
-
+            messagebox.showinfo("Zapisano", self.parent_app._t("msg_logo_captured"))
 
 # ─────────────────────────────────────────────
-# Обробка файлів
+# Przetwarzanie plików
 # ─────────────────────────────────────────────
-def anonymize_pdf(
-    input_path: str,
-    output_path: str,
-    enabled_cats: set,
-    registry: TokenRegistry,
-    log_cb=None,
-    logo_template=None,
-) -> dict:
+def anonymize_pdf(input_path: str, output_path: str, enabled_cats: set, registry: TokenRegistry, log_cb=None, logo_template=None) -> dict:
     if fitz is None:
-        if log_cb:
-            log_cb("❌ Błąd: pymupdf nie jest zainstalowany")
+        if log_cb: log_cb("log_error", "pymupdf nie jest zainstalowany")
         return {}
 
     doc = fitz.open(input_path)
+    for page_num, page in enumerate(doc):
+        if log_cb: log_cb("log_pdf_page", page_num + 1, len(doc))
+        
+        text = page.get_text("text")
+        search_page = page 
+        ocr_doc = None     
+        draw_queue = []
 
-    # FIX: ітерація через range(len(doc)) — Document не реалізує __iter__ для enumerate
-    for page_num in range(len(doc)):
-        page = doc[page_num]
-        if log_cb:
-            log_cb(f"📄 Przetwarzanie strony {page_num + 1}/{len(doc)}...")
-
-        text: str = str(page.get_text("text"))  # FIX: явний cast до str
-        search_page = page
-        ocr_doc = None
-        draw_queue: list = []  # оголошується один раз на початку ітерації
-
-        # 1. ТЕМПЛЕЙТ МЕТЧІНГ (ПОШУК ЛОГОТИПІВ)
         if logo_template is not None:
             try:
                 zoom = 2.0
                 mat = fitz.Matrix(zoom, zoom)
                 pix = page.get_pixmap(matrix=mat)
-
+                
                 img_np = np.frombuffer(pix.samples, dtype=np.uint8).reshape(pix.height, pix.width, pix.n)
                 if pix.n == 4:
                     img_cv = cv2.cvtColor(img_np, cv2.COLOR_RGBA2BGR)
                 else:
                     img_cv = cv2.cvtColor(img_np, cv2.COLOR_RGB2BGR)
-
+                
                 result = cv2.matchTemplate(img_cv, logo_template, cv2.TM_CCOEFF_NORMED)
                 threshold = 0.8
                 locations = np.where(result >= threshold)
-
+                
                 h, w = logo_template.shape[:2]
                 detected_count = 0
-
+                
                 for pt in zip(*locations[::-1]):
                     x1, y1 = pt[0], pt[1]
                     x2, y2 = pt[0] + w, pt[1] + h
-                    pdf_rect = fitz.Rect(x1 / zoom, y1 / zoom, x2 / zoom, y2 / zoom)
+                    pdf_rect = fitz.Rect(x1/zoom, y1/zoom, x2/zoom, y2/zoom)
                     page.add_redact_annot(pdf_rect, fill=(0, 0, 0))
-
+                    
                     token = "[LOGO]"
                     font_size = max(4, min(8, pdf_rect.height * 0.7))
                     text_width = fitz.get_text_length(token, fontsize=font_size)
@@ -627,49 +477,44 @@ def anonymize_pdf(
                     t_y = pdf_rect.y1 - (pdf_rect.height - font_size) / 2
                     draw_queue.append((t_x, t_y, token, font_size))
                     detected_count += 1
-
+                
                 if detected_count > 0 and log_cb:
-                    log_cb(f"🏢 Znaleziono logo w {detected_count} miejscach.")
+                    log_cb("log_logo_found", detected_count)
             except Exception as e:
-                if log_cb:
-                    log_cb(f"⚠️ Błąd wyszukiwania logo: {e}")
+                if log_cb: log_cb("log_error", str(e))
 
-        # 2. ДЕТЕКЦІЯ ТЕКСТУ (OCR)
         if len(text.strip()) < 50:
-            if log_cb:
-                log_cb(f"🔍 Wykryto skan (strona {page_num + 1}). Uruchamiam zaawansowany OCR...")
-            # FIX: old_cwd ініціалізується до try, щоб завжди був bound у except
-            old_cwd = os.getcwd()
+            if log_cb: log_cb("log_ocr_detect", page_num + 1)
             try:
+                import os
+                old_cwd = os.getcwd()
                 tess_dir = str((BASE_MODEL_PATH / "tesseract").absolute())
                 tessdata_dir = str((BASE_MODEL_PATH / "tesseract" / "tessdata").absolute())
-
+                
                 os.chdir(tess_dir)
                 pix = page.get_pixmap(dpi=300)
-                ocr_pdf_bytes: bytes = bytes(pix.pdfocr_tobytes(language="pol", tessdata=tessdata_dir))  # type: ignore[arg-type]
+                ocr_pdf_bytes = pix.pdfocr_tobytes(language="pol", tessdata=tessdata_dir)
                 os.chdir(old_cwd)
-
+                
                 ocr_doc = fitz.open("pdf", ocr_pdf_bytes)
                 search_page = ocr_doc[0]
-                text = str(search_page.get_text("text"))  # FIX: явний cast
-
-                if log_cb:
-                    log_cb(f"📝 OCR wyciągnął: {len(text)} znaków.")
+                text = search_page.get_text("text")
+                
+                if log_cb: log_cb("log_ocr_success", len(text))
             except Exception as e:
-                os.chdir(old_cwd)  # тепер завжди bound
-                if log_cb:
-                    log_cb(f"⚠️ Błąd OCR: {e}")
+                import os
+                if 'old_cwd' in locals(): os.chdir(old_cwd)
+                if log_cb: log_cb("log_error", str(e))
 
         if not text.strip():
-            if ocr_doc:
-                ocr_doc.close()
+            if ocr_doc: ocr_doc.close()
             if draw_queue:
                 page.apply_redactions()
                 for x, y, tkn, fs in draw_queue:
                     page.insert_text((x, y), tkn, fontsize=fs, color=(1, 1, 1))
             continue
 
-        all_findings: list = []
+        all_findings = []
         all_findings.extend(run_names_db(text, enabled_cats, registry))
         all_findings.extend(run_regex(text, enabled_cats, registry))
         all_findings.extend(run_spacy(text, enabled_cats, registry))
@@ -679,190 +524,147 @@ def anonymize_pdf(
 
         for start, end, token, label in merged:
             word = text[start:end].strip()
-            if not word or len(word) < 2:
-                continue
+            if not word or len(word) < 2: continue
             instances = search_page.search_for(word)
             for rect in instances:
-                page.add_redact_annot(rect, fill=(0, 0, 0))
+                page.add_redact_annot(rect, fill=(0, 0, 0)) 
                 font_size = max(4, min(8, rect.height * 0.7))
                 text_width = fitz.get_text_length(token, fontsize=font_size)
                 t_x = rect.x0 + (rect.width - text_width) / 2
                 t_y = rect.y1 - (rect.height - font_size) / 2
                 draw_queue.append((t_x, t_y, token, font_size))
-
+        
         page.apply_redactions()
 
         for x, y, tkn, fs in draw_queue:
             page.insert_text((x, y), tkn, fontsize=fs, color=(1, 1, 1))
-
-        # FIX: ocr_doc закривається один раз — через finally-подібний патерн в кінці ітерації
-        if ocr_doc:
-            ocr_doc.close()
-            ocr_doc = None
+            
+        if ocr_doc: ocr_doc.close()
 
     doc.save(output_path, garbage=4, deflate=True)
     doc.close()
-    if log_cb:
-        log_cb(f"✅ PDF zapisano: {output_path}")
     return registry.to_dict()
 
-
-def anonymize_docx(
-    input_path: str,
-    output_path: str,
-    enabled_cats: set,
-    registry: TokenRegistry,
-    log_cb=None,
-) -> dict:
+def anonymize_docx(input_path: str, output_path: str, enabled_cats: set, registry: TokenRegistry, log_cb=None) -> dict:
     try:
         import docx
     except ImportError:
-        if log_cb:
-            log_cb("❌ Błąd: biblioteka 'python-docx' nie jest zainstalowana.")
+        if log_cb: log_cb("log_error", "biblioteka 'python-docx' nie jest zainstalowana.")
         return {}
 
-    if log_cb:
-        log_cb("📄 Przetwarzanie dokumentu Word...")
     doc = docx.Document(input_path)
 
     def process_text_block(block):
-        if not block.text.strip():
-            return
-        text: str = block.text
-        all_findings: list = []
+        if not block.text.strip(): return
+        text = block.text
+        all_findings = []
         all_findings.extend(run_names_db(text, enabled_cats, registry))
         all_findings.extend(run_regex(text, enabled_cats, registry))
         all_findings.extend(run_spacy(text, enabled_cats, registry))
         all_findings.extend(run_transformer(pipeline_pii, "bardsai", text, enabled_cats, registry))
+        
         anonymized_text, merged = vote_and_anonymize(text, all_findings)
-        if merged:
-            block.text = anonymized_text
+        if merged: block.text = anonymized_text
 
-    for para in doc.paragraphs:
-        process_text_block(para)
+    for para in doc.paragraphs: process_text_block(para)
     for table in doc.tables:
         for row in table.rows:
             for cell in row.cells:
-                for para in cell.paragraphs:
-                    process_text_block(para)
+                for para in cell.paragraphs: process_text_block(para)
 
     doc.save(output_path)
-    if log_cb:
-        log_cb(f"✅ Plik DOCX zapisano: {output_path}")
     return registry.to_dict()
 
-
-def anonymize_text_file(
-    input_path: str,
-    output_path: str,
-    enabled_cats: set,
-    registry: TokenRegistry,
-    log_cb=None,
-) -> dict:
+def anonymize_text_file(input_path: str, output_path: str, enabled_cats: set, registry: TokenRegistry, log_cb=None) -> dict:
     with open(input_path, "r", encoding="utf-8", errors="replace") as f:
-        text: str = f.read()
+        text = f.read()
 
-    all_findings: list = []
+    all_findings = []
     all_findings.extend(run_names_db(text, enabled_cats, registry))
     all_findings.extend(run_regex(text, enabled_cats, registry))
     all_findings.extend(run_spacy(text, enabled_cats, registry))
     all_findings.extend(run_transformer(pipeline_pii, "bardsai", text, enabled_cats, registry))
 
-    anonymized_text, _ = vote_and_anonymize(text, all_findings)
+    anonymized_text, merged = vote_and_anonymize(text, all_findings)
 
     with open(output_path, "w", encoding="utf-8") as f:
         f.write(anonymized_text)
 
-    if log_cb:
-        log_cb(f"✅ Plik zapisano: {output_path}")
     return registry.to_dict()
 
-
 class HotFolderHandler(FileSystemEventHandler):
-    def __init__(self, file_queue: queue.Queue, log_cb):
+    def __init__(self, file_queue):
         self.queue = file_queue
-        self.log_cb = log_cb
 
     def on_created(self, event):
-        if event.is_directory:
-            return
-        raw_path = event.src_path
-        # FIX: watchdog може повернути bytes на деяких ОС
-        path: str = raw_path.decode("utf-8") if isinstance(raw_path, bytes) else raw_path
-        if "~$" not in path and any(path.lower().endswith(ext) for ext in ['.pdf', '.docx', '.txt', '.text']):
-            self.log_cb(f"📥 Wykryto nowy plik w folderze: {Path(path).name}")
-            self.queue.put(path)
-
+        if not event.is_directory:
+            path = event.src_path
+            if "~$" not in path and any(path.lower().endswith(ext) for ext in ['.pdf', '.docx', '.txt', '.text']):
+                self.queue.put(path)
 
 # ─────────────────────────────────────────────
-# GUI (Light Blue Theme)
+# GUI (Dynamic Theme & Localization)
 # ─────────────────────────────────────────────
-DARK_BG   = "#e0f2fe"
-PANEL_BG  = "#bae6fd"
-CARD_BG   = "#ffffff"
-ACCENT    = "#0284c7"
-ACCENT2   = "#0369a1"
-TEXT_PRIMARY   = "#0f172a"
-TEXT_SECONDARY = "#334155"
-GREEN  = "#16a34a"
-RED    = "#dc2626"
-YELLOW = "#d6da16"
-BORDER = "#7dd3fc"
-
-
 class AnonymizerApp(tk.Tk):
     def __init__(self):
         super().__init__()
-        self.title("🔒 Polish Document Anonymizer (Wersja Offline)")
-        self.geometry("980x740")
-        self.configure(bg=DARK_BG)
+        self.current_lang = "pl"
+        self.current_theme = "light"
+        
+        self.title(self._t("app_title"))
+        self.geometry("980x780")
         self.resizable(True, True)
 
         self.selected_file = tk.StringVar()
-        self.status_var = tk.StringVar(value="Gotowy")
+        self.status_var = tk.StringVar()
         self.registry = TokenRegistry()
 
-        self.cat_vars: dict[str, tk.BooleanVar] = {
-            "names":       tk.BooleanVar(value=True),
-            "addresses":   tk.BooleanVar(value=True),
-            "companies":   tk.BooleanVar(value=True),
-            "pesel":       tk.BooleanVar(value=True),
-            "nip":         tk.BooleanVar(value=True),
-            "regon":       tk.BooleanVar(value=True),
-            "iban":        tk.BooleanVar(value=True),
-            "card":        tk.BooleanVar(value=True),
-            "cvv":         tk.BooleanVar(value=True),
-            "phone":       tk.BooleanVar(value=True),
-            "email":       tk.BooleanVar(value=True),
-            "ip":          tk.BooleanVar(value=True),
-            "postal_code": tk.BooleanVar(value=True),
-            "passport":    tk.BooleanVar(value=True),
-            "pwz":         tk.BooleanVar(value=True),
-            "logos":       tk.BooleanVar(value=True),
+        self.cat_vars = {
+            "names": tk.BooleanVar(value=True), "addresses": tk.BooleanVar(value=True),
+            "companies": tk.BooleanVar(value=True), "pesel": tk.BooleanVar(value=True),
+            "nip": tk.BooleanVar(value=True), "regon": tk.BooleanVar(value=True),
+            "iban": tk.BooleanVar(value=True), "card": tk.BooleanVar(value=True),
+            "cvv": tk.BooleanVar(value=True), "phone": tk.BooleanVar(value=True),
+            "email": tk.BooleanVar(value=True), "ip": tk.BooleanVar(value=True),
+            "postal_code": tk.BooleanVar(value=True), "passport": tk.BooleanVar(value=True),
+            "pwz": tk.BooleanVar(value=True), "logos": tk.BooleanVar(value=True),
         }
 
         self.watch_src = tk.StringVar()
         self.watch_dst = tk.StringVar()
         self.is_watching = False
-        self.observer: "Optional[Observer]" = None  # FIX: явна анотація типу
-        self.auto_queue: queue.Queue = queue.Queue()
-
+        self.observer = None
+        self.auto_queue = queue.Queue()
+        
         self.last_activity = time.time()
         self.is_processing = False
         self.tray_icon = None
+        self.ui_elements = []
 
-        self._build_ui()
+        self._rebuild_ui()
         self._start_model_loading()
 
         self.protocol("WM_DELETE_WINDOW", self._hide_to_tray)
         threading.Thread(target=self._idle_monitor, daemon=True).start()
         threading.Thread(target=self._auto_process_worker, daemon=True).start()
 
+    def _t(self, key: str) -> str:
+        return TRANSLATIONS[self.current_lang].get(key, key)
+
+    def _switch_lang(self, lang):
+        self.current_lang = lang
+        self._rebuild_ui()
+
+    def _switch_theme(self):
+        self.current_theme = "dark" if self.current_theme == "light" else "light"
+        self._apply_theme()
+
     def _toggle_autostart(self):
         try:
             import winreg
             key_path = r"Software\Microsoft\Windows\CurrentVersion\Run"
             app_name = "AnonSupreme"
+            
             key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, key_path, 0, winreg.KEY_ALL_ACCESS)
             try:
                 winreg.QueryValueEx(key, app_name)
@@ -874,189 +676,241 @@ class AnonymizerApp(tk.Tk):
             finally:
                 winreg.CloseKey(key)
         except Exception as e:
-            self._log(f"❌ Błąd autostartu: {e}")
+            self._log("log_error", str(e))
             messagebox.showerror("Błąd", f"Nie udało się zmienić ustawień:\n{e}")
 
-    def _build_ui(self):
-        header = tk.Frame(self, bg=DARK_BG)
-        header.pack(fill="x", padx=20, pady=(18, 0))
+    def _rebuild_ui(self):
+        for widget in self.winfo_children():
+            widget.destroy()
+        self.ui_elements.clear()
 
-        tk.Label(
-            header, text="🔒 Polish Document Anonymizer",
-            font=("Courier New", 18, "bold"), bg=DARK_BG, fg=ACCENT,
-        ).pack(side="left")
-        self.model_status_label = tk.Label(
-            header, text="● Ładowanie modeli...",
-            font=("Courier New", 9, "bold"), bg=DARK_BG, fg=YELLOW,
-        )
+        self.title(self._t("app_title"))
+        self.status_var.set(self._t("status_ready"))
+
+        # Top Bar (Language & Theme)
+        top = tk.Frame(self)
+        self.ui_elements.append({"widget": top, "type": "bg"})
+        top.pack(fill="x", padx=20, pady=(15, 0))
+
+        btn_opts = {"font": ("Verdana", 9, "bold"), "relief": "flat", "padx": 10, "cursor": "hand2"}
+        btn_pl = tk.Button(top, text="PL", command=lambda: self._switch_lang("pl"), **btn_opts)
+        btn_uk = tk.Button(top, text="UK", command=lambda: self._switch_lang("uk"), **btn_opts)
+        btn_theme = tk.Button(top, text="🌓", command=self._switch_theme, **btn_opts)
+
+        self.ui_elements.extend([
+            {"widget": btn_pl, "type": "btn_accent"}, 
+            {"widget": btn_uk, "type": "btn_accent"}, 
+            {"widget": btn_theme, "type": "btn_accent"}
+        ])
+        btn_pl.pack(side="left")
+        btn_uk.pack(side="left", padx=5)
+        btn_theme.pack(side="right")
+
+        # Header
+        header = tk.Frame(self)
+        self.ui_elements.append({"widget": header, "type": "bg"})
+        header.pack(fill="x", padx=20, pady=(10, 0))
+
+        lbl_title = tk.Label(header, text=self._t("app_title"), font=("Verdana", 15, "bold"))
+        self.ui_elements.append({"widget": lbl_title, "type": "lbl_title"})
+        lbl_title.pack(side="left")
+
+        self.model_status_label = tk.Label(header, text=self._t("loading_models"), font=("Verdana", 9, "bold"))
+        self.ui_elements.append({"widget": self.model_status_label, "type": "lbl_model"})
         self.model_status_label.pack(side="right", padx=10)
 
-        content = tk.Frame(self, bg=DARK_BG)
+        # Main Content Wrapper
+        content = tk.Frame(self)
+        self.ui_elements.append({"widget": content, "type": "bg"})
         content.pack(fill="both", expand=True, padx=20, pady=12)
 
-        left = tk.Frame(content, bg=DARK_BG)
+        left = tk.Frame(content)
+        self.ui_elements.append({"widget": left, "type": "bg"})
         left.pack(side="left", fill="both", expand=True)
 
-        right = tk.Frame(content, bg=DARK_BG, width=320)
+        right = tk.Frame(content, width=320)
+        self.ui_elements.append({"widget": right, "type": "bg"})
         right.pack(side="right", fill="y", padx=(12, 0))
         right.pack_propagate(False)
 
-        file_card = self._card(left, "📂 Wybór dokumentu")
-        file_row = tk.Frame(file_card, bg=CARD_BG)
-        file_row.pack(fill="x")
-        self.file_entry = tk.Entry(
-            file_row, textvariable=self.selected_file,
-            font=("Courier New", 9), bg="#f0f9ff", fg=TEXT_PRIMARY,
-            insertbackground=ACCENT, relief="flat", bd=6,
-        )
-        self.file_entry.pack(side="left", fill="x", expand=True)
-        self._btn(file_row, "Przeglądaj", self._browse_file, ACCENT).pack(side="right", padx=(8, 0))
+        # --- LEFT FRAME ---
+        f_card = self._create_card(left, self._t("file_select_title"))
+        ent_file = tk.Entry(f_card, textvariable=self.selected_file, font=("Verdana", 9), relief="flat", bd=6)
+        self.ui_elements.append({"widget": ent_file, "type": "entry"})
+        ent_file.pack(side="left", fill="x", expand=True, padx=(0, 8))
+        
+        btn_browse = tk.Button(f_card, text=self._t("browse"), command=self._browse_file, font=("Verdana", 9, "bold"), relief="flat", cursor="hand2")
+        self.ui_elements.append({"widget": btn_browse, "type": "btn_accent"})
+        btn_browse.pack(side="right")
 
-        cat_card = self._card(left, "🎯 Kategorie do anonimizacji")
-        cat_labels = {
-            "names":       "👤 Imiona i nazwiska",
-            "addresses":   "📍 Adresy i miasta",
-            "companies":   "🏢 Firmy i org.",
-            "pesel":       "🆔 PESEL",
-            "nip":         "🏦 NIP",
-            "regon":       "📋 REGON",
-            "iban":        "💳 IBAN / Konto",
-            "card":        "💳 Numer karty",
-            "cvv":         "🔐 CVV",
-            "phone":       "📱 Telefony",
-            "email":       "✉️ Adresy E-mail",
-            "ip":          "🌐 Adresy IP",
-            "postal_code": "📮 Kody pocztowe",
-            "passport":    "🛂 Paszporty",
-            "pwz":         "🏥 PWZ (lekarze)",
-            "logos":       "🏢 Logotypy firm",
-        }
-
-        grid_frame = tk.Frame(cat_card, bg=CARD_BG)
+        c_card = self._create_card(left, self._t("categories_title"))
+        grid_frame = tk.Frame(c_card)
+        self.ui_elements.append({"widget": grid_frame, "type": "card_bg"})
         grid_frame.pack(fill="x")
 
         cols = 3
-        for i, (key, label) in enumerate(cat_labels.items()):
+        for i, key in enumerate(self.cat_vars.keys()):
             row_i, col_i = i // cols, i % cols
-            cb = tk.Checkbutton(
-                grid_frame, text=label, variable=self.cat_vars[key],
-                bg=CARD_BG, fg=TEXT_PRIMARY, selectcolor="#f0f9ff",
-                activebackground=CARD_BG, activeforeground=ACCENT,
-                font=("Courier New", 8), cursor="hand2",
-            )
+            cb = tk.Checkbutton(grid_frame, text=self._t(key), variable=self.cat_vars[key], font=("Verdana", 8), cursor="hand2")
+            self.ui_elements.append({"widget": cb, "type": "cb"})
             cb.grid(row=row_i, column=col_i, sticky="w", padx=6, pady=2)
 
-        btn_row = tk.Frame(cat_card, bg=CARD_BG)
+        btn_row = tk.Frame(c_card)
+        self.ui_elements.append({"widget": btn_row, "type": "card_bg"})
         btn_row.pack(fill="x", pady=(6, 0))
-        self._btn(btn_row, "Zaznacz wszystko", self._select_all, ACCENT, small=True).pack(side="left")
-        self._btn(btn_row, "Odznacz wszystko", self._deselect_all, RED, small=True).pack(side="left", padx=6)
+        
+        btn_sel = tk.Button(btn_row, text=self._t("sel_all"), command=self._select_all, font=("Verdana", 8, "bold"), relief="flat", cursor="hand2")
+        btn_desel = tk.Button(btn_row, text=self._t("desel_all"), command=self._deselect_all, font=("Verdana", 8, "bold"), relief="flat", cursor="hand2")
+        self.ui_elements.append({"widget": btn_sel, "type": "btn_accent"})
+        self.ui_elements.append({"widget": btn_desel, "type": "btn_danger"})
+        btn_sel.pack(side="left", padx=(0, 6))
+        btn_desel.pack(side="left")
 
-        auto_card = self._card(left, "🔄 Tryb automatyczny (Hot Folder)")
-        src_row = tk.Frame(auto_card, bg=CARD_BG)
+        auto_card = self._create_card(left, self._t("auto_mode_title"))
+        src_row = tk.Frame(auto_card)
+        dst_row = tk.Frame(auto_card)
+        self.ui_elements.append({"widget": src_row, "type": "card_bg"})
+        self.ui_elements.append({"widget": dst_row, "type": "card_bg"})
         src_row.pack(fill="x", pady=(0, 4))
-        tk.Button(
-            src_row, text="📁 Źródło", command=self._browse_src_dir,
-            font=("Courier New", 8, "bold"), bg=ACCENT, fg="white", relief="flat", padx=6,
-        ).pack(side="left")
-        tk.Entry(
-            src_row, textvariable=self.watch_src,
-            font=("Courier New", 8), bg="#f8fafc", fg=TEXT_SECONDARY,
-            relief="flat", state="readonly",
-        ).pack(side="left", fill="x", expand=True, padx=(6, 0))
-
-        dst_row = tk.Frame(auto_card, bg=CARD_BG)
         dst_row.pack(fill="x", pady=(4, 8))
-        tk.Button(
-            dst_row, text="📁 Zapis ", command=self._browse_dst_dir,
-            font=("Courier New", 8, "bold"), bg=ACCENT, fg="white", relief="flat", padx=6,
-        ).pack(side="left")
-        tk.Entry(
-            dst_row, textvariable=self.watch_dst,
-            font=("Courier New", 8), bg="#f8fafc", fg=TEXT_SECONDARY,
-            relief="flat", state="readonly",
-        ).pack(side="left", fill="x", expand=True, padx=(6, 0))
-
-        self.watch_btn = self._btn(auto_card, "▶ Uruchom nasłuchiwanie", self._toggle_watch, GREEN)
+        
+        btn_src = tk.Button(src_row, text=self._t("src_folder"), command=self._browse_src_dir, font=("Verdana", 8, "bold"), relief="flat", padx=6)
+        ent_src = tk.Entry(src_row, textvariable=self.watch_src, font=("Verdana", 8), relief="flat", state="readonly")
+        self.ui_elements.append({"widget": btn_src, "type": "btn_accent"})
+        self.ui_elements.append({"widget": ent_src, "type": "entry_disabled"})
+        btn_src.pack(side="left")
+        ent_src.pack(side="left", fill="x", expand=True, padx=(6, 0))
+        
+        btn_dst = tk.Button(dst_row, text=self._t("dst_folder"), command=self._browse_dst_dir, font=("Verdana", 8, "bold"), relief="flat", padx=6)
+        ent_dst = tk.Entry(dst_row, textvariable=self.watch_dst, font=("Verdana", 8), relief="flat", state="readonly")
+        self.ui_elements.append({"widget": btn_dst, "type": "btn_accent"})
+        self.ui_elements.append({"widget": ent_dst, "type": "entry_disabled"})
+        btn_dst.pack(side="left")
+        ent_dst.pack(side="left", fill="x", expand=True, padx=(6, 0))
+        
+        self.watch_btn = tk.Button(auto_card, text=self._t("start_watch") if not self.is_watching else self._t("stop_watch"), command=self._toggle_watch, font=("Verdana", 9, "bold"), relief="flat")
+        self.ui_elements.append({"widget": self.watch_btn, "type": "btn_accent"})
         self.watch_btn.pack(fill="x")
 
-        self.run_btn = self._btn(left, "🚀  ANONIMIZUJ", self._run_anonymization, ACCENT2, large=True)
+        self.run_btn = tk.Button(left, text=self._t("run_btn"), command=self._run_anonymization, font=("Verdana", 12, "bold"), pady=8, cursor="hand2", relief="flat")
+        self.ui_elements.append({"widget": self.run_btn, "type": "btn_accent2"})
         self.run_btn.pack(fill="x", pady=(10, 0))
 
-        log_card = self._card(left, "📋 Log operacji")
-        self.log_text = scrolledtext.ScrolledText(
-            log_card, height=10, font=("Courier New", 8),
-            bg="#f8fafc", fg=GREEN, insertbackground=GREEN,
-            relief="flat", bd=1, state="disabled",
-        )
+        log_card = self._create_card(left, self._t("log_title"))
+        self.log_text = scrolledtext.ScrolledText(log_card, height=10, font=("Verdana", 8), relief="flat", bd=1, state="disabled")
+        self.ui_elements.append({"widget": self.log_text, "type": "log"})
         self.log_text.pack(fill="both", expand=True)
 
-        reg_label = tk.Label(
-            right, text="🗃️  Rejestr tokenów",
-            font=("Courier New", 10, "bold"), bg=DARK_BG, fg=TEXT_PRIMARY,
-        )
+        # --- RIGHT FRAME ---
+        reg_label = tk.Label(right, text="🗃️ Token Registry", font=("Verdana", 10, "bold"))
+        self.ui_elements.append({"widget": reg_label, "type": "lbl_title"})
         reg_label.pack(anchor="w", pady=(0, 6))
-        self.registry_text = scrolledtext.ScrolledText(
-            right, font=("Courier New", 8), bg="#ffffff", fg=TEXT_PRIMARY,
-            insertbackground=ACCENT, relief="flat", bd=1, state="disabled",
-            highlightbackground=BORDER, highlightthickness=1,
-        )
+        
+        self.registry_text = scrolledtext.ScrolledText(right, font=("Courier New", 8), relief="flat", bd=1, highlightthickness=1)
+        self.ui_elements.append({"widget": self.registry_text, "type": "registry"})
         self.registry_text.pack(fill="both", expand=True)
+        self.registry_text.configure(state="disabled")
 
-        export_row = tk.Frame(right, bg=DARK_BG)
+        export_row = tk.Frame(right)
+        self.ui_elements.append({"widget": export_row, "type": "bg"})
         export_row.pack(fill="x", pady=(6, 0))
-        self._btn(export_row, "💾 Eksport JSON", self._export_registry, ACCENT, small=True).pack(fill="x", pady=(0, 6))
-        self._btn(export_row, "⚙️ Dodaj do menu (Prawy klik)", self._add_context_menu, ACCENT2, small=True).pack(fill="x")
-        self._btn(export_row, "🚀 Autostart z Windows", self._toggle_autostart, ACCENT, small=True).pack(fill="x")
+        
+        btn_export = tk.Button(export_row, text=self._t("export_btn"), command=self._export_registry, font=("Verdana", 8, "bold"), relief="flat", pady=4)
+        btn_menu = tk.Button(export_row, text=self._t("add_menu"), command=self._add_context_menu, font=("Verdana", 8, "bold"), relief="flat", pady=4)
+        btn_auto = tk.Button(export_row, text=self._t("autostart"), command=self._toggle_autostart, font=("Verdana", 8, "bold"), relief="flat", pady=4)
 
-        status_bar = tk.Frame(self, bg=PANEL_BG, height=24)
+        self.ui_elements.append({"widget": btn_export, "type": "btn_accent"})
+        self.ui_elements.append({"widget": btn_menu, "type": "btn_accent2"})
+        self.ui_elements.append({"widget": btn_auto, "type": "btn_accent"})
+
+        btn_export.pack(fill="x", pady=(0, 6))
+        btn_menu.pack(fill="x", pady=(0, 6))
+        btn_auto.pack(fill="x")
+
+        # Status Bar
+        status_bar = tk.Frame(self, height=24)
+        self.ui_elements.append({"widget": status_bar, "type": "panel"})
         status_bar.pack(fill="x", side="bottom")
-        tk.Label(
-            status_bar, textvariable=self.status_var,
-            font=("Courier New", 8), bg=PANEL_BG, fg=TEXT_SECONDARY,
-        ).pack(side="left", padx=10)
+        
+        lbl_status = tk.Label(status_bar, textvariable=self.status_var, font=("Verdana", 8))
+        self.ui_elements.append({"widget": lbl_status, "type": "lbl_status"})
+        lbl_status.pack(side="left", padx=10)
 
-    def _card(self, parent, title: str) -> tk.Frame:
-        wrapper = tk.Frame(parent, bg=DARK_BG)
+        self._apply_theme()
+        # Повторне заповнення панелі реєстру після зміни мови/теми
+        self._update_registry_panel()
+
+    def _create_card(self, parent, title: str) -> tk.Frame:
+        wrapper = tk.Frame(parent)
+        self.ui_elements.append({"widget": wrapper, "type": "bg"})
         wrapper.pack(fill="x", pady=(0, 10))
-        tk.Label(wrapper, text=title, font=("Courier New", 9, "bold"), bg=DARK_BG, fg=TEXT_SECONDARY).pack(anchor="w", pady=(0, 4))
-        card = tk.Frame(wrapper, bg=CARD_BG, bd=0, relief="flat", padx=12, pady=10)
+        
+        lbl = tk.Label(wrapper, text=title, font=("Verdana", 9, "bold"))
+        self.ui_elements.append({"widget": lbl, "type": "lbl_card"})
+        lbl.pack(anchor="w", pady=(0, 4))
+        
+        card = tk.Frame(wrapper, bd=0, relief="flat", padx=12, pady=10)
+        self.ui_elements.append({"widget": card, "type": "card_bg"})
+        card.configure(highlightthickness=1)
         card.pack(fill="x")
-        card.configure(highlightbackground=BORDER, highlightthickness=1)
         return card
 
-    def _btn(self, parent, text: str, command, color: str, small=False, large=False) -> tk.Button:
-        size = 8 if small else (12 if large else 9)
-        pady = 2 if small else (8 if large else 4)
-        return tk.Button(
-            parent, text=text, command=command,
-            font=("Courier New", size, "bold"), bg=color, fg="white",
-            activebackground=PANEL_BG, activeforeground=color,
-            relief="flat", bd=0, cursor="hand2", pady=pady, padx=10,
-        )
+    def _apply_theme(self):
+        t = THEMES[self.current_theme]
+        self.configure(bg=t["bg"])
+        
+        for item in self.ui_elements:
+            w = item["widget"]
+            w_type = item["type"]
+            if not w.winfo_exists(): continue
+            
+            if w_type == "bg":
+                w.configure(bg=t["bg"])
+            elif w_type == "card_bg":
+                w.configure(bg=t["card"], highlightbackground=t["border"])
+            elif w_type == "lbl_title":
+                w.configure(bg=t["bg"], fg=t["accent"])
+            elif w_type == "lbl_card":
+                w.configure(bg=t["bg"], fg=t["text_secondary"])
+            elif w_type == "lbl_model":
+                w.configure(bg=t["bg"], fg=t["warning"])
+            elif w_type == "entry":
+                w.configure(bg=t["bg"], fg=t["text_primary"], insertbackground=t["accent"])
+            elif w_type == "entry_disabled":
+                w.configure(bg=t["panel"], fg=t["text_secondary"])
+            elif w_type == "cb":
+                w.configure(bg=t["card"], fg=t["text_primary"], selectcolor=t["bg"], activebackground=t["card"], activeforeground=t["accent"])
+            elif w_type == "btn_accent":
+                w.configure(bg=t["accent"], fg="#ffffff", activebackground=t["accent_hover"], activeforeground="#ffffff")
+            elif w_type == "btn_accent2":
+                w.configure(bg=t["accent2"] if self.current_theme == "light" else t["success"], fg="#ffffff", activebackground=t["accent_hover"], activeforeground="#ffffff")
+            elif w_type == "btn_danger":
+                w.configure(bg=t["danger"], fg="#ffffff", activebackground=t["text_secondary"], activeforeground="#ffffff")
+            elif w_type == "log":
+                w.configure(bg=t["card"], fg=t["success"], insertbackground=t["success"])
+            elif w_type == "registry":
+                w.configure(bg=t["card"], fg=t["text_primary"], insertbackground=t["accent"], highlightbackground=t["border"])
+            elif w_type == "panel":
+                w.configure(bg=t["panel"])
+            elif w_type == "lbl_status":
+                w.configure(bg=t["panel"], fg=t["text_secondary"])
 
     def _browse_file(self):
         path = filedialog.askopenfilename(
-            title="Wybierz dokument",
-            filetypes=[
-                ("Obsługiwane pliki", "*.pdf *.docx *.txt *.text"),
-                ("PDF", "*.pdf"),
-                ("Dokument Word", "*.docx"),
-                ("Pliki tekstowe", "*.txt *.text"),
-            ],
+            title=self._t("file_select_title"), 
+            filetypes=[("Obsługiwane pliki", "*.pdf *.docx *.txt *.text"), ("PDF", "*.pdf"), ("Dokument Word", "*.docx"), ("Pliki tekstowe", "*.txt *.text")]
         )
-        if path:
-            self.selected_file.set(path)
+        if path: self.selected_file.set(path)
 
     def _select_all(self):
-        for v in self.cat_vars.values():
-            v.set(True)
+        for v in self.cat_vars.values(): v.set(True)
 
     def _deselect_all(self):
-        for v in self.cat_vars.values():
-            v.set(False)
+        for v in self.cat_vars.values(): v.set(False)
 
-    def _log(self, msg: str):
+    def _log(self, key: str, *args):
         def _do():
+            msg = self._t(key).format(*args) if args else self._t(key)
             self.log_text.configure(state="normal")
             ts = datetime.now().strftime("%H:%M:%S")
             self.log_text.insert("end", f"[{ts}] {msg}\n")
@@ -1070,7 +924,7 @@ class AnonymizerApp(tk.Tk):
             self.registry_text.configure(state="normal")
             self.registry_text.delete("1.0", "end")
             if not reg:
-                self.registry_text.insert("end", "Pusto\n")
+                self.registry_text.insert("end", self._t("msg_empty_reg") + "\n")
             else:
                 for original, info in sorted(reg.items(), key=lambda x: x[1]["token"]):
                     line = f"{info['token']:12s} │ {info['label']:12s} │ {original[:30]}\n"
@@ -1080,29 +934,24 @@ class AnonymizerApp(tk.Tk):
 
     def _export_registry(self):
         if not self.registry.to_dict():
-            messagebox.showinfo("Uwaga", "Rejestr jest pusty")
+            messagebox.showinfo("Uwaga", self._t("msg_empty_reg"))
             return
-        path = filedialog.asksaveasfilename(
-            defaultextension=".json",
-            filetypes=[("JSON", "*.json")],
-            initialfile="token_registry.json",
-        )
+        path = filedialog.asksaveasfilename(defaultextension=".json", filetypes=[("JSON", "*.json")], initialfile="token_registry.json")
         if path:
             with open(path, "w", encoding="utf-8") as f:
                 json.dump(self.registry.to_dict(), f, ensure_ascii=False, indent=2)
             messagebox.showinfo("✅ Zapisano", f"Rejestr zapisany:\n{path}")
 
     def _start_model_loading(self):
-        def _done_cb(msg):
-            if "Gotowe" in msg:
-                self.after(0, lambda: self.model_status_label.configure(text="● Modele gotowe", fg=GREEN))
-            self._log(msg)
+        def _done_cb(msg, *args):
+            if msg == "models_ready":
+                self.after(0, lambda: self.model_status_label.configure(text=self._t("models_ready"), fg=THEMES[self.current_theme]["success"]))
+            self._log(msg, *args)
         threading.Thread(target=lazy_load_models, args=(_done_cb,), daemon=True).start()
-
+    
     def _add_context_menu(self):
         try:
             import winreg
-            # FIX: завжди пишемо в HKEY_CURRENT_USER (не потребує прав адміністратора)
             key_path = r"Software\Classes\*\shell\Anonimizuj"
             key = winreg.CreateKey(winreg.HKEY_CURRENT_USER, key_path)
             winreg.SetValue(key, "", winreg.REG_SZ, "🔒 Anonimizuj dokument")
@@ -1112,66 +961,57 @@ class AnonymizerApp(tk.Tk):
             cmd_key = winreg.CreateKey(winreg.HKEY_CURRENT_USER, key_path + r"\command")
             winreg.SetValue(cmd_key, "", winreg.REG_SZ, f'"{EXE_PATH}" "%1"')
             winreg.CloseKey(cmd_key)
-            self._log("✅ Zaktualizowano menu kontekstowe Windows.")
+            self._log("log_context_menu")
             messagebox.showinfo("✅ Sukces", "Opcja dodana do menu pod prawym przyciskiem myszy!")
         except Exception as e:
-            err_msg = str(e)
-            self._log(f"❌ Błąd rejestru: {err_msg}")
-            messagebox.showerror("❌ Błąd", f"Nie udało się zaktualizować rejestru:\n{err_msg}")
+            self._log("log_error", str(e))
+            messagebox.showerror("❌ Błąd", f"Nie udało się zaktualizować rejestru:\n{str(e)}")
 
     def _run_anonymization(self):
         path = self.selected_file.get().strip()
         if not path or not os.path.exists(path):
-            messagebox.showwarning("⚠️ Uwaga", "Najpierw wybierz istniejący dokument!")
+            messagebox.showwarning("⚠️ Uwaga", self._t("msg_select_file"))
             return
 
         enabled_cats = {k for k, v in self.cat_vars.items() if v.get()}
         if not enabled_cats:
-            messagebox.showwarning("⚠️ Uwaga", "Wybierz przynajmniej jedną kategorię!")
+            messagebox.showwarning("⚠️ Uwaga", self._t("msg_select_cat"))
             return
 
         p = Path(path)
-        out_path = filedialog.asksaveasfilename(
-            title="Zapisz zanonimizowany plik",
-            initialfile=f"{p.stem}_anonymized{p.suffix}",
-            defaultextension=p.suffix,
-            filetypes=[("Taki sam format", f"*{p.suffix}")],
-        )
-        if not out_path:
-            return
+        out_path = filedialog.asksaveasfilename(title=self._t("msg_save_title"), initialfile=f"{p.stem}_anonymized{p.suffix}", defaultextension=p.suffix, filetypes=[("Format", f"*{p.suffix}")])
+        if not out_path: return
 
-        self.run_btn.configure(state="disabled", text="⏳ Przetwarzanie...")
+        self.run_btn.configure(state="disabled", text="⏳ ...")
         self.registry = TokenRegistry()
 
         logo_template_cv = None
         if path.lower().endswith(".pdf") and "logos" in enabled_cats:
-            selector = LogoSelector(self, path)
-            self.wait_window(selector)
-            if selector.template_image is not None:
-                logo_template_cv = selector.template_image
-                self._log("✅ Pobrano wzór logotypu.")
-            else:
-                self._log("⚠️ Nie zaznaczono logotypu, pomijam ten krok.")
+            if messagebox.askyesno("Logo", self._t("msg_logo_ask")):
+                selector = LogoSelector(self, path)
+                self.wait_window(selector)
+                if selector.template_image is not None:
+                    logo_template_cv = selector.template_image
 
         def worker(cv_template):
             self.is_processing = True
             self.last_activity = time.time()
-
+            
             global MODELS_LOADED
             if not MODELS_LOADED:
-                self._log("⏳ Wybudzanie modeli AI...")
-                self.after(0, lambda: self.model_status_label.configure(text="● Ładowanie modeli...", fg=YELLOW))
-                lazy_load_models(self._log)
-                self.after(0, lambda: self.model_status_label.configure(text="● Modele gotowe", fg=GREEN))
+                self._log("log_wake_models")
+                self.after(0, lambda: self.model_status_label.configure(text=self._t("loading_models")))
+                lazy_load_models(lambda k, *a: self._log(k, *a))
+                self.after(0, lambda: self.model_status_label.configure(text=self._t("models_ready")))
 
-            self._log(f"🔒 Rozpoczęcie anonimizacji: {p.name}")
+            self._log("log_start", p.name)
             try:
                 if path.lower().endswith(".pdf"):
-                    anonymize_pdf(path, out_path, enabled_cats, self.registry, self._log, cv_template)
+                    anonymize_pdf(path, out_path, enabled_cats, self.registry, lambda k, *a: self._log(k, *a), cv_template)
                 elif path.lower().endswith(".docx"):
-                    anonymize_docx(path, out_path, enabled_cats, self.registry, self._log)
+                    anonymize_docx(path, out_path, enabled_cats, self.registry, lambda k, *a: self._log(k, *a))
                 else:
-                    anonymize_text_file(path, out_path, enabled_cats, self.registry, self._log)
+                    anonymize_text_file(path, out_path, enabled_cats, self.registry, lambda k, *a: self._log(k, *a))
 
                 out_p = Path(out_path)
                 reg_path = out_p.parent / f"{out_p.stem}_tokens.json"
@@ -1180,179 +1020,149 @@ class AnonymizerApp(tk.Tk):
 
                 self._update_registry_panel()
                 reg_count = len(self.registry.to_dict())
-                self._log(f"🎉 Gotowe! Zapisano dokument i {reg_count} tokenów.")
-                self.after(0, lambda c=reg_count: messagebox.showinfo(
-                    "✅ Gotowe", "Anonimizacja zakończona!\nDokument i rejestr JSON zapisane."
-                ))
+                self._log("log_finish", reg_count)
+                self.after(0, lambda: messagebox.showinfo(self._t("msg_finish_title"), self._t("msg_finish_body")))
             except Exception as e:
-                err_msg = str(e)
-                self._log(f"❌ Błąd: {err_msg}")
-                self.after(0, lambda msg=err_msg: messagebox.showerror("❌ Błąd", msg))
+                self._log("log_error", str(e))
+                self.after(0, lambda msg=str(e): messagebox.showerror("❌ Błąd", msg))
             finally:
                 self.is_processing = False
-                self.last_activity = time.time()
-                self.after(0, lambda: self.run_btn.configure(state="normal", text="🚀  ANONIMIZUJ"))
-                self.after(0, lambda: self.status_var.set(f"Zakończono: {p.name}"))
+                self.last_activity = time.time() 
+                self.after(0, lambda: self.run_btn.configure(state="normal", text=self._t("run_btn")))
+                self.after(0, lambda: self.status_var.set(f"OK: {p.name}"))
 
         threading.Thread(target=worker, args=(logo_template_cv,), daemon=True).start()
 
     def _browse_src_dir(self):
-        path = filedialog.askdirectory(title="Wybierz folder źródłowy (nasłuchiwanie)")
-        if path:
-            self.watch_src.set(path)
+        path = filedialog.askdirectory(title="Źródło (nasłuchiwanie)")
+        if path: self.watch_src.set(path)
 
     def _browse_dst_dir(self):
-        path = filedialog.askdirectory(title="Wybierz folder docelowy (zapis)")
-        if path:
-            self.watch_dst.set(path)
+        path = filedialog.askdirectory(title="Zapis (docelowy)")
+        if path: self.watch_dst.set(path)
 
     def _toggle_watch(self):
         if self.is_watching:
             self.is_watching = False
-            # FIX: guard проти None перед викликом .stop()/.join()
-            if self.observer is not None:
+            if self.observer:
                 self.observer.stop()
                 self.observer.join()
                 self.observer = None
-            self.watch_btn.configure(text="▶ Uruchom nasłuchiwanie", bg=GREEN)
-            self._log("⏹️ Zatrzymano automatyczne nasłuchiwanie.")
-            self.status_var.set("Nasłuchiwanie wyłączone")
+            self.watch_btn.configure(text=self._t("start_watch"))
+            self._log("log_watch_stop")
         else:
             src, dst = self.watch_src.get(), self.watch_dst.get()
             if not src or not dst:
-                messagebox.showwarning("Uwaga", "Wybierz folder źródłowy i docelowy!")
+                messagebox.showwarning("Uwaga", self._t("msg_auto_folders"))
                 return
             if src == dst:
                 messagebox.showwarning("Uwaga", "Folder źródłowy i docelowy nie mogą być tym samym folderem!")
                 return
             if not MODELS_LOADED:
-                messagebox.showwarning("Uwaga", "Poczekaj na załadowanie modeli AI!")
                 return
 
             self.is_watching = True
-            self.watch_btn.configure(text="⏸️ Zatrzymaj nasłuchiwanie", bg=RED)
-            self._log(f"▶️ Start nasłuchiwania w:\n{src}")
-            self.status_var.set("Nasłuchiwanie aktywne...")
+            self.watch_btn.configure(text=self._t("stop_watch"))
+            self._log("log_watch_start", src)
 
-            event_handler = HotFolderHandler(self.auto_queue, self._log)
+            event_handler = HotFolderHandler(self.auto_queue)
             self.observer = Observer()
-            assert self.observer is not None  # допомагає Pylance звузити тип
             self.observer.schedule(event_handler, src, recursive=False)
             self.observer.start()
 
     def _auto_process_worker(self):
         while True:
-            filepath: str = self.auto_queue.get()
+            filepath = self.auto_queue.get() 
             self.is_processing = True
             self.last_activity = time.time()
-            time.sleep(2)
-
+            time.sleep(2) 
+            
             global MODELS_LOADED
             if not MODELS_LOADED:
-                self._log("⏳ Wybudzanie modeli AI (Auto)...")
-                self.after(0, lambda: self.model_status_label.configure(text="● Ładowanie modeli...", fg=YELLOW))
-                lazy_load_models(self._log)
-                self.after(0, lambda: self.model_status_label.configure(text="● Modele gotowe", fg=GREEN))
+                self._log("log_wake_models")
+                self.after(0, lambda: self.model_status_label.configure(text=self._t("loading_models")))
+                lazy_load_models(lambda k, *a: self._log(k, *a))
+                self.after(0, lambda: self.model_status_label.configure(text=self._t("models_ready")))
 
             try:
                 p = Path(filepath)
                 dst_folder = Path(self.watch_dst.get())
                 out_path = str(dst_folder / f"{p.stem}_anonymized{p.suffix}")
                 reg_path = dst_folder / f"{p.stem}_tokens.json"
-
+                
                 enabled_cats = {k for k, v in self.cat_vars.items() if v.get()}
-                self._log(f"⚙️ Auto-Przetwarzanie: {p.name}")
-
+                
                 if p.suffix.lower() == ".pdf":
-                    anonymize_pdf(filepath, out_path, enabled_cats, self.registry, self._log)
+                    anonymize_pdf(filepath, out_path, enabled_cats, self.registry, lambda k, *a: self._log(k, *a))
                 elif p.suffix.lower() == ".docx":
-                    anonymize_docx(filepath, out_path, enabled_cats, self.registry, self._log)
+                    anonymize_docx(filepath, out_path, enabled_cats, self.registry, lambda k, *a: self._log(k, *a))
                 else:
-                    anonymize_text_file(filepath, out_path, enabled_cats, self.registry, self._log)
+                    anonymize_text_file(filepath, out_path, enabled_cats, self.registry, lambda k, *a: self._log(k, *a))
 
                 with open(reg_path, "w", encoding="utf-8") as f:
                     json.dump(self.registry.to_dict(), f, ensure_ascii=False, indent=2)
 
                 self._update_registry_panel()
-                self._log(f"✅ Auto-Zapisano: {Path(out_path).name} i rejestr JSON.")
+                self._log("log_finish", len(self.registry.to_dict()))
             except Exception as e:
-                self._log(f"❌ Auto-Błąd dla {Path(filepath).name}: {str(e)}")
+                self._log("log_error", str(e))
             finally:
                 self.is_processing = False
-                self.last_activity = time.time()
+                self.last_activity = time.time() 
                 self.auto_queue.task_done()
-
+    
     def _idle_monitor(self):
         global nlp_spacy, pipeline_pii, MODELS_LOADED
         while True:
             time.sleep(10)
             if MODELS_LOADED and not self.is_processing:
                 if time.time() - self.last_activity > 300:
-                    self._log("💤 5 min bezczynności. Zwalnianie pamięci RAM...")
-                    nlp_spacy = None
-                    pipeline_pii = None
+                    self._log("log_idle_ram")
+                    nlp_spacy, pipeline_pii = None, None
                     gc.collect()
                     MODELS_LOADED = False
-                    self.after(0, lambda: self.model_status_label.configure(
-                        text="● Modele uśpione (RAM zwolniony)", fg=YELLOW
-                    ))
+                    self.after(0, lambda: self.model_status_label.configure(text=self._t("models_sleep")))
 
     def _hide_to_tray(self):
-        self.withdraw()
+        self.withdraw() 
         if not self.tray_icon:
             img = Image.new('RGB', (64, 64), color=(2, 132, 199))
             d = ImageDraw.Draw(img)
             d.rectangle((16, 16, 48, 48), fill="white")
-            menu = pystray.Menu(
-                pystray.MenuItem("Pokaż okno", self._show_window),
-                pystray.MenuItem("Zamknij całkowicie", self._quit_app),
-            )
+            menu = pystray.Menu(pystray.MenuItem("Pokaż okno", self._show_window), pystray.MenuItem("Zamknij całkowicie", self._quit_app))
             self.tray_icon = pystray.Icon("AnonSupreme", img, "AnonSupreme - Aktywny", menu)
             threading.Thread(target=self.tray_icon.run, daemon=True).start()
 
     def _show_window(self, icon, item):
-        if self.tray_icon is not None:
-            self.tray_icon.stop()
+        self.tray_icon.stop()
         self.tray_icon = None
         self.after(0, self.deiconify)
 
     def _quit_app(self, icon, item):
-        if self.tray_icon is not None:
-            self.tray_icon.stop()
-        os._exit(0)
-
+        self.tray_icon.stop()
+        os._exit(0) 
 
 # ─────────────────────────────────────────────
-# Точка входу (CLI / GUI)
+# Punkt wejścia (SETUP / CLI / GUI)
 # ─────────────────────────────────────────────
 if __name__ == "__main__":
-    # FIX: блок --setup тепер пише в HKEY_CURRENT_USER (як _add_context_menu)
-    # щоб не вимагати прав адміністратора
     if "--setup" in sys.argv:
         import winreg
         root = tk.Tk()
         root.withdraw()
-        messagebox.showinfo(
-            "Instalacja",
-            "Rozpoczynam pobieranie modeli AI (ok. 1 GB).\n"
-            "Może to potrwać kilka minut w zależności od połączenia sieciowego.\n\n"
-            "Kliknij OK i poczekaj na komunikat końcowy.",
-        )
+        messagebox.showinfo(TRANSLATIONS["pl"]["app_title"], "Rozpoczynam pobieranie modeli AI (ok. 1 GB).\nMoże to potrwać kilka minut w zależności od połączenia sieciowego.\n\nKliknij OK i poczekaj na komunikat końcowy.")
         try:
             ensure_models_exist()
-            key_path = r"Software\Classes\*\shell\Anonimizuj"  # FIX: CURRENT_USER, не CLASSES_ROOT
-            key = winreg.CreateKey(winreg.HKEY_CURRENT_USER, key_path)
+            key_path = r"*\shell\Anonimizuj"
+            key = winreg.CreateKey(winreg.HKEY_CLASSES_ROOT, key_path)
             winreg.SetValue(key, "", winreg.REG_SZ, "🔒 Anonimizuj dokument")
             winreg.SetValueEx(key, "Icon", 0, winreg.REG_SZ, f'"{EXE_PATH}"')
             winreg.CloseKey(key)
 
-            cmd_key = winreg.CreateKey(winreg.HKEY_CURRENT_USER, key_path + r"\command")
+            cmd_key = winreg.CreateKey(winreg.HKEY_CLASSES_ROOT, key_path + r"\command")
             winreg.SetValue(cmd_key, "", winreg.REG_SZ, f'"{EXE_PATH}" "%1"')
             winreg.CloseKey(cmd_key)
-            messagebox.showinfo(
-                "Sukces",
-                "Instalacja zakończona!\nModele zostały pobrane, a menu kontekstowe zaktualizowane.",
-            )
+            messagebox.showinfo(TRANSLATIONS["pl"]["msg_finish_title"], "Instalacja zakończona!\nModele zostały pobrane, a menu kontekstowe zaktualizowane.")
         except Exception as e:
             messagebox.showerror("Błąd Instalacji", f"Wystąpił błąd:\n{e}")
         sys.exit(0)
@@ -1367,9 +1177,9 @@ if __name__ == "__main__":
         reg_path = str(p.parent / f"{p.stem}_tokens.json")
 
         enabled_cats = {
-            "names", "addresses", "companies", "pesel", "nip", "regon",
-            "iban", "card", "cvv", "phone", "email", "ip", "postal_code",
-            "passport", "pwz", "logos",
+            "names", "addresses", "companies", "pesel", "nip", "regon", 
+            "iban", "card", "cvv", "phone", "email", "ip", "postal_code", 
+            "passport", "pwz", "logos"
         }
 
         registry = TokenRegistry()
@@ -1378,7 +1188,7 @@ if __name__ == "__main__":
 
         logo_template_cv = None
         if input_file.lower().endswith(".pdf"):
-            if messagebox.askyesno("Wykrywanie Logo", "Czy chcesz zaznaczyć i ukryć logo w tym dokumencie?"):
+            if messagebox.askyesno("Wykrywanie Logo", TRANSLATIONS["pl"]["msg_logo_ask"]):
                 selector = LogoSelector(root, input_file)
                 root.wait_window(selector)
                 if selector.template_image is not None:
@@ -1396,7 +1206,7 @@ if __name__ == "__main__":
             with open(reg_path, "w", encoding="utf-8") as f:
                 json.dump(registry.to_dict(), f, ensure_ascii=False, indent=2)
 
-            messagebox.showinfo("✅ Sukces", f"Anonimizacja zakończona!\n\nPlik: {Path(out_path).name}")
+            messagebox.showinfo(TRANSLATIONS["pl"]["msg_finish_title"], f"Anonimizacja zakończona!\n\nPlik: {Path(out_path).name}")
         except Exception as e:
             messagebox.showerror("❌ Błąd", f"Wystąpił błąd podczas anonimizacji:\n{str(e)}")
         sys.exit(0)
