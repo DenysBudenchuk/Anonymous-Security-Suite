@@ -28,6 +28,7 @@ from watchdog.events import FileSystemEventHandler
 
 from locales import TRANSLATIONS
 from stopwords import STOP_WORDS 
+from hf_token import HF_TOKEN
 
 # ─────────────────────────────────────────────
 # Zmienne globalne
@@ -124,8 +125,6 @@ def ensure_models_exist(log_callback=None):
         from huggingface_hub import snapshot_download
         from huggingface_hub.utils import disable_progress_bars
         disable_progress_bars()
-        
-        HF_TOKEN = "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" 
         try:
             if pii_missing:
                 snapshot_download(repo_id="bardsai/eu-pii-anonimization-multilang", local_dir=str(path_pii), token=HF_TOKEN, local_dir_use_symlinks=False, ignore_patterns=["*.msgpack", "*.h5", "*.ot", "*.onnx", "*.flax"])
