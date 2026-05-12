@@ -17,6 +17,7 @@ from pathlib import Path
 from datetime import datetime
 import time
 import queue
+import fitz
 import gc
 import cv2
 import numpy as np
@@ -24,7 +25,9 @@ from PIL import ImageTk, Image, ImageDraw
 import pystray
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
-
+from huggingface_hub import snapshot_download, hf_hub_download
+import zipfile
+import shutil
 from locales import TRANSLATIONS
 from stopwords import STOP_WORDS 
 from hf_token import HF_TOKEN
@@ -100,6 +103,10 @@ def load_names_db(log_callback=None):
 # Inicjalizacja modeli i OCR
 # ─────────────────────────────────────────────
 def ensure_models_exist(log_callback=None):
+    """
+    Перевіряє наявність усіх локальних компонентів. 
+    Якщо файли відсутні — завантажує їх, включаючи розпакування ZIP-архіву Tesseract.
+    """
     if sys.stderr is None:
         class DummyOutput:
             def write(self, *args, **kwargs): pass
@@ -107,108 +114,176 @@ def ensure_models_exist(log_callback=None):
         sys.stderr = DummyOutput()
         sys.stdout = DummyOutput()
 
-    # Налаштування мережі та виводу
+    # Налаштування середовища
     os.environ['CURL_CA_BUNDLE'] = ''
     os.environ['PYTHONHTTPSVERIFY'] = '0'
     os.environ["HF_HUB_DISABLE_PROGRESS_BARS"] = "1" 
 
-    # Шляхи до компонентів
+    # Визначення шляхів
     path_pii = BASE_MODEL_PATH / "eu-pii-anonimization"
     path_spacy = BASE_MODEL_PATH / "pl_core_news_lg"
     path_tesseract = BASE_MODEL_PATH / "tesseract"
     path_names = BASE_MODEL_PATH / "names_db.txt"
     tesseract_exe = path_tesseract / "tesseract.exe"
 
-    # Оптимізована перевірка наявності ключових файлів
+    # Перевірка наявності ключових компонентів
     pii_missing = not (path_pii / "config.json").exists()
     spacy_missing = not (path_spacy / "config.cfg").exists()
     tesseract_missing = not tesseract_exe.exists()
     names_missing = not path_names.exists()
 
-    # Якщо хоча б чогось не вистачає — запускаємо процес завантаження
     if any([pii_missing, spacy_missing, tesseract_missing, names_missing]):
         BASE_MODEL_PATH.mkdir(parents=True, exist_ok=True)
-        from huggingface_hub import snapshot_download, hf_hub_download
-        from huggingface_hub.utils.tqdm import disable_progress_bars
-        disable_progress_bars()
+        
         try:
-            # 1. Завантаження Tesseract (з TwoMD/Teser)
-            if tesseract_missing:
-                if log_callback: log_callback("log_error", "Завантаження Tesseract OCR...")
-                snapshot_download(repo_id="TwoMD/Teser", allow_patterns=["tesseract/*"], local_dir=str(BASE_MODEL_PATH), token=HF_TOKEN)
-            
-            # 2. Завантаження бази імен (з TwoMD/Teser)
+            # 1. Завантаження бази імен (names_db.txt)
             if names_missing:
-                if log_callback: log_callback("log_error", "Завантаження бази імен...")
-                hf_hub_download(repo_id="TwoMD/Teser", filename="names_db.txt", local_dir=str(BASE_MODEL_PATH), token=HF_TOKEN)
+                if log_callback: log_callback("log_error", "Завантаження бази імен (txt)...")
+                hf_hub_download(
+                    repo_id="TwoMD/Teser", 
+                    filename="names_db.txt", 
+                    repo_type="dataset",
+                    local_dir=str(BASE_MODEL_PATH), 
+                    token=HF_TOKEN
+                )
+
+# 2. Завантаження та розпакування Tesseract (tesseract.zip)
+            if tesseract_missing:
+                if log_callback: log_callback("log_error", "Завантаження Tesseract (ZIP)...")
+                
+                try:
+                    tess_zip_path = hf_hub_download(
+                        repo_id="TwoMD/Teser", 
+                        filename="tesseract.zip", 
+                        repo_type="dataset",
+                        local_dir=str(BASE_MODEL_PATH), 
+                        token=HF_TOKEN,
+                        resume_download=True # <--- Дозволяє продовжити завантаження, якщо воно обірвалося
+                    )
+                    
+                    if log_callback: log_callback("log_error", "Розпакування Tesseract...")
+                    with zipfile.ZipFile(tess_zip_path, 'r') as zip_ref:
+                        zip_ref.extractall(str(BASE_MODEL_PATH))
+                    
+                    if os.path.exists(tess_zip_path):
+                        os.remove(tess_zip_path)
+                        
+                except zipfile.BadZipFile:
+                    # Якщо скачався "битий" файл, видаляємо його, щоб при наступному запуску скачати наново
+                    if log_callback: log_callback("log_error", "❌ Помилка: Архів пошкоджено. Очищення...")
+                    if os.path.exists(str(BASE_MODEL_PATH / "tesseract.zip")):
+                        os.remove(str(BASE_MODEL_PATH / "tesseract.zip"))
+                    raise Exception("Файл завантажився з помилкою. Перезапустіть програму.")
 
             # 3. Завантаження PII моделі
             if pii_missing:
                 if log_callback: log_callback("log_error", "Завантаження PII моделі...")
-                snapshot_download(repo_id="bardsai/eu-pii-anonimization-multilang", local_dir=str(path_pii), token=HF_TOKEN, local_dir_use_symlinks=False, ignore_patterns=["*.msgpack", "*.h5", "*.ot", "*.onnx", "*.flax"])
+                snapshot_download(
+                    repo_id="bardsai/eu-pii-anonimization-multilang", 
+                    local_dir=str(path_pii), 
+                    token=HF_TOKEN, 
+                    local_dir_use_symlinks=False, 
+                    ignore_patterns=["*.msgpack", "*.h5", "*.ot", "*.onnx", "*.flax"]
+                )
             
             # 4. Завантаження spaCy
             if spacy_missing:
                 if log_callback: log_callback("log_error", "Завантаження мовної моделі...")
-                snapshot_download(repo_id="spacy/pl_core_news_lg", local_dir=str(path_spacy), token=HF_TOKEN, local_dir_use_symlinks=False, ignore_patterns=["*.h5", "*.ot", "*.onnx", "*.flax"])
+                snapshot_download(
+                    repo_id="spacy/pl_core_news_lg", 
+                    local_dir=str(path_spacy), 
+                    token=HF_TOKEN, 
+                    local_dir_use_symlinks=False, 
+                    ignore_patterns=["*.h5", "*.ot", "*.onnx", "*.flax"]
+                )
                 
         except Exception as e:
-            if log_callback: log_callback("log_error", str(e))
+            if log_callback: log_callback("log_error", f"Помилка мережі: {str(e)}")
             raise e
 
+    # Конфігурація Tesseract
     if tesseract_exe.exists():
         abs_tess_path = str(path_tesseract.absolute())
         abs_tessdata_path = str((path_tesseract / "tessdata").absolute())
         os.environ["PATH"] = abs_tess_path + os.pathsep + os.environ.get("PATH", "")
         os.environ["TESSDATA_PREFIX"] = abs_tessdata_path
 
-
 def lazy_load_models(log_callback=None):
     global spacy, nlp_spacy, pipeline_pii, fitz, MODELS_LOADED, MODELS_LOADING
+    
+    if MODELS_LOADED: return
     MODELS_LOADING = True
 
     def log(msg, *args):
-        if log_callback: log_callback(msg, *args)
+        print(f"[{msg}]", *args) 
+        if log_callback: 
+            log_callback(msg, *args)
         
     try:
         ensure_models_exist(log)
-    except Exception:
+    except Exception as e:
+        log("log_error", f"КРИТИЧНИЙ ЗБІЙ ЗАВАНТАЖЕННЯ: {str(e)}")
         MODELS_LOADING = False
         return
 
-    # Примусово переводимо Hugging Face в офлайн-режим після перевірки наявності файлів
     os.environ['TRANSFORMERS_OFFLINE'] = '1'
     os.environ['HF_DATASETS_OFFLINE'] = '1'
 
-    try:
-        import fitz as _fitz
-        fitz = _fitz
-    except ImportError:
-        pass
+    path_spacy = BASE_MODEL_PATH / "pl_core_news_lg"
+    path_pii = BASE_MODEL_PATH / "eu-pii-anonimization"
 
+    # ─────────────────────────────────────────────
+    # 1. Завантаження та авто-відновлення spaCy
+    # ─────────────────────────────────────────────
     try:
         import spacy as _spacy
-        spacy = _spacy
-        path_spacy = str(BASE_MODEL_PATH / "pl_core_news_lg")
-        nlp_spacy = spacy.load(path_spacy)
-    except Exception:
-        pass
+        nlp_spacy = _spacy.load(str(path_spacy))
+    except Exception as e:
+        log("log_info", f"⚠️ Виявлено пошкодження кешу spaCy. Запуск авто-відновлення...")
+        if path_spacy.exists():
+            shutil.rmtree(path_spacy, ignore_errors=True) # Видаляємо биту папку
+        
+        # Знімаємо офлайн-блоки для повторного завантаження
+        os.environ['TRANSFORMERS_OFFLINE'] = '0'
+        os.environ['HF_DATASETS_OFFLINE'] = '0'
+        
+        ensure_models_exist(log) # Качаємо наново
+        
+        os.environ['TRANSFORMERS_OFFLINE'] = '1'
+        os.environ['HF_DATASETS_OFFLINE'] = '1'
+        nlp_spacy = _spacy.load(str(path_spacy)) # Пробуємо завантажити ще раз
 
+    # ─────────────────────────────────────────────
+    # 2. Завантаження та авто-відновлення PII моделі
+    # ─────────────────────────────────────────────
     try:
         from transformers import pipeline as hf_pipeline
-        path_pii = str(BASE_MODEL_PATH / "eu-pii-anonimization")
-        pipeline_pii = hf_pipeline("ner", model=path_pii, tokenizer=path_pii, aggregation_strategy="simple")
-    except Exception:
-        pass
+        pipeline_pii = hf_pipeline("ner", model=str(path_pii), tokenizer=str(path_pii), aggregation_strategy="simple") # type: ignore
+    except Exception as e:
+        log("log_info", f"⚠️ Виявлено пошкодження кешу PII. Запуск авто-відновлення...")
+        if path_pii.exists():
+            shutil.rmtree(path_pii, ignore_errors=True)
+            
+        os.environ['TRANSFORMERS_OFFLINE'] = '0'
+        os.environ['HF_DATASETS_OFFLINE'] = '0'
+        
+        ensure_models_exist(log)
+        
+        os.environ['TRANSFORMERS_OFFLINE'] = '1'
+        os.environ['HF_DATASETS_OFFLINE'] = '1'
+        pipeline_pii = hf_pipeline("ner", model=str(path_pii), tokenizer=str(path_pii), aggregation_strategy="simple") # type: ignore
 
+    # ─────────────────────────────────────────────
+    # 3. База імен
+    # ─────────────────────────────────────────────
     try:
         load_names_db(log)
-    except Exception:
-        pass
-
-    MODELS_LOADED = True
-    MODELS_LOADING = False
-    log("models_ready")
+        MODELS_LOADED = True
+        log("models_ready")
+    except Exception as e:
+        log("log_error", f"Помилка завантаження імен: {str(e)}")
+    finally:
+        MODELS_LOADING = False
 # ─────────────────────────────────────────────
 # Mapowanie RegEx i NER
 # ─────────────────────────────────────────────
