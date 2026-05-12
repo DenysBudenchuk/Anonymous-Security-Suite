@@ -116,7 +116,7 @@ def ensure_models_exist(log_callback=None):
     path_pii = BASE_MODEL_PATH / "eu-pii-anonimization"
     path_spacy = BASE_MODEL_PATH / "pl_core_news_lg"
     path_tesseract = BASE_MODEL_PATH / "tesseract"
-    path_names = BASE_MODEL_PATH / "names_db.json"
+    path_names = BASE_MODEL_PATH / "names_db.txt"
     tesseract_exe = path_tesseract / "tesseract.exe"
 
     # Оптимізована перевірка наявності ключових файлів
@@ -140,7 +140,7 @@ def ensure_models_exist(log_callback=None):
             # 2. Завантаження бази імен (з TwoMD/Teser)
             if names_missing:
                 if log_callback: log_callback("log_error", "Завантаження бази імен...")
-                hf_hub_download(repo_id="TwoMD/Teser", filename="names_db.json", local_dir=str(BASE_MODEL_PATH), token=HF_TOKEN)
+                hf_hub_download(repo_id="TwoMD/Teser", filename="names_db.txt", local_dir=str(BASE_MODEL_PATH), token=HF_TOKEN)
 
             # 3. Завантаження PII моделі
             if pii_missing:
