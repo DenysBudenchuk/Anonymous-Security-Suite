@@ -18,7 +18,6 @@ from datetime import datetime
 import time
 import queue
 import gc
-
 import cv2
 import numpy as np
 from PIL import ImageTk, Image, ImageDraw
@@ -108,28 +107,51 @@ def ensure_models_exist(log_callback=None):
         sys.stderr = DummyOutput()
         sys.stdout = DummyOutput()
 
+    # Налаштування мережі та виводу
     os.environ['CURL_CA_BUNDLE'] = ''
     os.environ['PYTHONHTTPSVERIFY'] = '0'
     os.environ["HF_HUB_DISABLE_PROGRESS_BARS"] = "1" 
 
+    # Шляхи до компонентів
     path_pii = BASE_MODEL_PATH / "eu-pii-anonimization"
     path_spacy = BASE_MODEL_PATH / "pl_core_news_lg"
     path_tesseract = BASE_MODEL_PATH / "tesseract"
+    path_names = BASE_MODEL_PATH / "names_db.json"
     tesseract_exe = path_tesseract / "tesseract.exe"
 
-    pii_missing = not path_pii.exists() or not list(path_pii.glob('*'))
-    spacy_missing = not path_spacy.exists() or not list(path_spacy.glob('*'))
+    # Оптимізована перевірка наявності ключових файлів
+    pii_missing = not (path_pii / "config.json").exists()
+    spacy_missing = not (path_spacy / "config.cfg").exists()
+    tesseract_missing = not tesseract_exe.exists()
+    names_missing = not path_names.exists()
 
-    if pii_missing or spacy_missing:
+    # Якщо хоча б чогось не вистачає — запускаємо процес завантаження
+    if any([pii_missing, spacy_missing, tesseract_missing, names_missing]):
         BASE_MODEL_PATH.mkdir(parents=True, exist_ok=True)
-        from huggingface_hub import snapshot_download
-        from huggingface_hub.utils import disable_progress_bars
+        from huggingface_hub import snapshot_download, hf_hub_download
+        from huggingface_hub.utils.tqdm import disable_progress_bars
         disable_progress_bars()
         try:
+            # 1. Завантаження Tesseract (з TwoMD/Teser)
+            if tesseract_missing:
+                if log_callback: log_callback("log_error", "Завантаження Tesseract OCR...")
+                snapshot_download(repo_id="TwoMD/Teser", allow_patterns=["tesseract/*"], local_dir=str(BASE_MODEL_PATH), token=HF_TOKEN)
+            
+            # 2. Завантаження бази імен (з TwoMD/Teser)
+            if names_missing:
+                if log_callback: log_callback("log_error", "Завантаження бази імен...")
+                hf_hub_download(repo_id="TwoMD/Teser", filename="names_db.json", local_dir=str(BASE_MODEL_PATH), token=HF_TOKEN)
+
+            # 3. Завантаження PII моделі
             if pii_missing:
+                if log_callback: log_callback("log_error", "Завантаження PII моделі...")
                 snapshot_download(repo_id="bardsai/eu-pii-anonimization-multilang", local_dir=str(path_pii), token=HF_TOKEN, local_dir_use_symlinks=False, ignore_patterns=["*.msgpack", "*.h5", "*.ot", "*.onnx", "*.flax"])
+            
+            # 4. Завантаження spaCy
             if spacy_missing:
+                if log_callback: log_callback("log_error", "Завантаження мовної моделі...")
                 snapshot_download(repo_id="spacy/pl_core_news_lg", local_dir=str(path_spacy), token=HF_TOKEN, local_dir_use_symlinks=False, ignore_patterns=["*.h5", "*.ot", "*.onnx", "*.flax"])
+                
         except Exception as e:
             if log_callback: log_callback("log_error", str(e))
             raise e
@@ -139,6 +161,7 @@ def ensure_models_exist(log_callback=None):
         abs_tessdata_path = str((path_tesseract / "tessdata").absolute())
         os.environ["PATH"] = abs_tess_path + os.pathsep + os.environ.get("PATH", "")
         os.environ["TESSDATA_PREFIX"] = abs_tessdata_path
+
 
 def lazy_load_models(log_callback=None):
     global spacy, nlp_spacy, pipeline_pii, fitz, MODELS_LOADED, MODELS_LOADING
@@ -150,8 +173,10 @@ def lazy_load_models(log_callback=None):
     try:
         ensure_models_exist(log)
     except Exception:
+        MODELS_LOADING = False
         return
 
+    # Примусово переводимо Hugging Face в офлайн-режим після перевірки наявності файлів
     os.environ['TRANSFORMERS_OFFLINE'] = '1'
     os.environ['HF_DATASETS_OFFLINE'] = '1'
 
@@ -184,7 +209,6 @@ def lazy_load_models(log_callback=None):
     MODELS_LOADED = True
     MODELS_LOADING = False
     log("models_ready")
-
 # ─────────────────────────────────────────────
 # Mapowanie RegEx i NER
 # ─────────────────────────────────────────────
