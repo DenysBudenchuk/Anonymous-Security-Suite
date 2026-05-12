@@ -38,7 +38,6 @@ from hf_token import HF_TOKEN
 spacy = None
 nlp_spacy = None
 pipeline_pii = None
-fitz = None
 
 MODELS_LOADED = False
 MODELS_LOADING = False
@@ -117,7 +116,8 @@ def ensure_models_exist(log_callback=None):
     # Налаштування середовища
     os.environ['CURL_CA_BUNDLE'] = ''
     os.environ['PYTHONHTTPSVERIFY'] = '0'
-    os.environ["HF_HUB_DISABLE_PROGRESS_BARS"] = "1" 
+    os.environ["HF_HUB_DISABLE_PROGRESS_BARS"] = "1"
+    os.environ["HF_HUB_DOWNLOAD_TIMEOUT"] = "300" 
 
     # Визначення шляхів
     path_pii = BASE_MODEL_PATH / "eu-pii-anonimization"
@@ -144,7 +144,8 @@ def ensure_models_exist(log_callback=None):
                     filename="names_db.txt", 
                     repo_type="dataset",
                     local_dir=str(BASE_MODEL_PATH), 
-                    token=HF_TOKEN
+                    token=HF_TOKEN,
+                    resume_download=True # <--- Додано для відновлення завантаження
                 )
 
 # 2. Завантаження та розпакування Tesseract (tesseract.zip)
@@ -183,7 +184,8 @@ def ensure_models_exist(log_callback=None):
                     local_dir=str(path_pii), 
                     token=HF_TOKEN, 
                     local_dir_use_symlinks=False, 
-                    ignore_patterns=["*.msgpack", "*.h5", "*.ot", "*.onnx", "*.flax"]
+                    ignore_patterns=["*.msgpack", "*.h5", "*.ot", "*.onnx", "*.flax"],
+                    resume_download=True # <--- Додано для відновлення завантаження
                 )
             
             # 4. Завантаження spaCy
@@ -194,7 +196,8 @@ def ensure_models_exist(log_callback=None):
                     local_dir=str(path_spacy), 
                     token=HF_TOKEN, 
                     local_dir_use_symlinks=False, 
-                    ignore_patterns=["*.h5", "*.ot", "*.onnx", "*.flax"]
+                    ignore_patterns=["*.h5", "*.ot", "*.onnx", "*.flax"],
+                    resume_download=True # <--- Додано для відновлення завантаження
                 )
                 
         except Exception as e:
@@ -209,7 +212,7 @@ def ensure_models_exist(log_callback=None):
         os.environ["TESSDATA_PREFIX"] = abs_tessdata_path
 
 def lazy_load_models(log_callback=None):
-    global spacy, nlp_spacy, pipeline_pii, fitz, MODELS_LOADED, MODELS_LOADING
+    global spacy, nlp_spacy, pipeline_pii, MODELS_LOADED, MODELS_LOADING
     
     if MODELS_LOADED: return
     MODELS_LOADING = True
