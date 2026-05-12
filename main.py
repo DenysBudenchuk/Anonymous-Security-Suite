@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """
-Polish Document Anonymizer (Offline Secure Edition)
+Anonymous-Security-Suite
 ==========================
 Wymagania:
-    pip install spacy transformers torch pymupdf huggingface_hub python-docx watchdog pystray pillow opencv-python-headless numpy
+    pip install spacy transformers pymupdf huggingface_hub python-docx watchdog pystray pillow opencv-python-headless numpy
+    pip install torch --index-url https://download.pytorch.org/whl/cpu
 """
 
 import os
